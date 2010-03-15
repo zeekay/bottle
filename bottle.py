@@ -367,13 +367,13 @@ class Bottle(object):
             return app.handle(request.path, request.method)
         self.mounts[script_path] = app
 
-    def add_filter(self, ftype, func):
+    def add_filter(self, ftype, func, final=False):
         ''' Register a new output filter. Whenever bottle hits a handler output
             matching `ftype`, `func` is applyed to it. '''
         if not isinstance(ftype, type):
             raise TypeError("Expected type object, got %s" % type(ftype))
         self.castfilter = [(t, f) for (t, f) in self.castfilter if t != ftype]
-        self.castfilter.append((ftype, func))
+        self.castfilter.append((ftype, func, final))
         self.castfilter.sort()
 
     def match_url(self, path, method='GET'):
@@ -453,9 +453,9 @@ class Bottle(object):
         iterable of strings and iterable of unicodes
         """
         # Filtered types (recursive, because they may return anything)
-        for testtype, filterfunc in self.castfilter:
+        for testtype, filterfunc, final in self.castfilter:
             if isinstance(out, testtype):
-                return self._cast(filterfunc(out))
+                return filterfunc(out) if final else self._cast(filterfunc(out))
 
         # Empty output is done here
         if not out:
