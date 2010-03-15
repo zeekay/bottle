@@ -168,6 +168,39 @@ class HTTPError(HTTPResponse):
 
 
 
+# Async Tests
+
+class AsyncContext(object):
+  def init(self, request, response, handler, **kwargs):
+      self.request = request.copy()
+      self.resonse = response.copy()
+      self.start = self.response.start
+      self.handler = handler
+      self.kwargs = kwargs
+      self.outiter = None
+      
+  def __iter__(self): 
+      if not self.outiter:
+          self.outiter = self.handler(self, **kwargs)
+          self.next = self.outiter.next
+      return self
+  
+  def next(self, value=None): pass
+  def sleep(self, time):
+      raise NotImplementedError() #TODO: Translate to backend command
+  def flush():
+      raise NotImplementedError() #TODO: Translate to backend command      
+
+def async(handler):
+  def wrapper(**kwargs):
+    return AsyncContext(request, response, handler, **kwargs)
+  return wrapper
+
+
+
+
+
+
 # Routing
 
 class RouteError(BottleException):
@@ -514,14 +547,17 @@ class Bottle(object):
         """ The bottle WSGI-interface. """
         try:
             request.bind(environ, self)
-            response.bind(self)
-            out = self.handle(request.path, request.method)
-            out = self._cast(out, request, response)
-            if response.status in (100, 101, 204, 304) or request.method == 'HEAD':
-                out = [] # rfc2616 section 4.3
-            status = '%d %s' % (response.status, HTTP_CODES[response.status])
-            start_response(status, response.headerlist)
-            return out
+            response.bind(start_response, self)
+            path, method = request.path, request.method
+            out = self.handle(path, method)
+            if isinstance(out, AsyncContext):
+                return iter(out)
+            else:
+                out = self._cast(out, request, response)
+                response.start()
+                if response.status in (100, 101, 204, 304) or method == 'HEAD':
+                    return [] # rfc2616 section 4.3
+                return out
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
         except Exception, e:
@@ -761,16 +797,22 @@ class Response(threading.local):
     """ Represents a single HTTP response using thread-local attributes.
     """
 
-    def __init__(self, app):
-        self.bind(app)
+    def __init__(self, start_response, app):
+        self.bind(start_response, app)
 
-    def bind(self, app):
+    def bind(self, start_response, app):
         """ Resets the Response object to its factory defaults. """
         self._COOKIES = None
         self.status = 200
         self.headers = HeaderDict()
         self.content_type = 'text/html; charset=UTF-8'
         self.app = app
+        self.response_callback = start_response
+
+    def start(status=None, header=None):
+        if not status: status = self.status
+        if not header: header = response.headerlist
+        return start_response('%d %s' % (status, HTTP_CODES[status]), header)
 
     def copy(self):
         ''' Returns a copy of self '''
