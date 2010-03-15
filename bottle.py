@@ -488,7 +488,7 @@ class Bottle(object):
         # Filtered types (recursive, because they may return anything)
         for testtype, filterfunc, final in self.castfilter:
             if isinstance(out, testtype):
-                return filterfunc(out) if final else self._cast(filterfunc(out))
+                return filterfunc(out) if final else self._cast(filterfunc(out), request, response)
 
         # Empty output is done here
         if not out:
@@ -507,10 +507,10 @@ class Bottle(object):
         # HTTPError or HTTPException (recursive, because they may wrap anything)
         if isinstance(out, HTTPError):
             out.apply(response)
-            return self._cast(self.error_handler.get(out.status, repr)(out))
+            return self._cast(self.error_handler.get(out.status, repr)(out), request, response)
         if isinstance(out, HTTPResponse):
             out.apply(response)
-            return self._cast(out.output)
+            return self._cast(out.output, request, response)
 
         # Cast Files into iterables
         if hasattr(out, 'read') and 'wsgi.file_wrapper' in request.environ:
@@ -524,7 +524,7 @@ class Bottle(object):
             while not first:
                 first = out.next()
         except StopIteration:
-            return self._cast('')
+            return self._cast('', request, response)
         except HTTPResponse, e:
             first = e
         except Exception, e:
@@ -534,14 +534,14 @@ class Bottle(object):
                 raise
         # These are the inner types allowed in iterator or generator objects.
         if isinstance(first, HTTPResponse):
-            return self._cast(first)
+            return self._cast(first, request, response)
         if isinstance(first, StringType):
             return itertools.chain([first], out)
         if isinstance(first, unicode):
             return itertools.imap(lambda x: x.encode(response.charset),
                                   itertools.chain([first], out))
         return self._cast(HTTPError(500, 'Unsupported response type: %s'\
-                                         % type(first)))
+                                         % type(first)), request, response)
 
     def __call__(self, environ, start_response):
         """ The bottle WSGI-interface. """
@@ -797,7 +797,7 @@ class Response(threading.local):
     """ Represents a single HTTP response using thread-local attributes.
     """
 
-    def __init__(self, start_response, app):
+    def __init__(self, start_response=None, app=None):
         self.bind(start_response, app)
 
     def bind(self, start_response, app):
