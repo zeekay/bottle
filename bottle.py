@@ -1122,9 +1122,9 @@ def auth_required(check, realm='bottle-authentication'):
             except (TypeError, AttributeError):
                 auth = False
             else:
-                try:
+                if callable(check):
                     auth = check(user, password)
-                except TypeError:
+                else:
                     auth = False
                     if user in check and check[user] == password:
                         auth = True
