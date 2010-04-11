@@ -1001,7 +1001,7 @@ def parse_auth(header):
         if method.lower() == 'basic':
             name, pwd = base64.b64decode(data).split(':', 1)
             return name, pwd
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError, AttributeError):
         return None
 
 
@@ -1106,10 +1106,34 @@ def error(code=500):
     """
     return app().error(code)
 
-
-
-
-
+def auth_required(check, realm='bottle-authentication'):
+    """
+    Decorator for basic authentication. 
+    
+    Either "check" has to be a callable object with two arguments (user and
+    password) and has to return a bool value if login was sucessful or not.
+    Or check has to be a dictionary containing users as keys and their
+    passwords as values.
+    """
+    def decorator(view):
+        def wrapper(*args, **kwargs):
+            try:
+                user, password = request.auth
+            except (TypeError, AttributeError):
+                auth = False
+            else:
+                try:
+                    auth = check(user, password)
+                except TypeError:
+                    auth = False
+                    if user in check and check[user] == password:
+                        auth = True
+                if auth:
+                    return view(*args, **kwargs)
+            return HTTPError(401, 'Access denied!', 
+                header={'WWW-Authenticate': 'Basic realm="%s"' % realm})
+        return wrapper
+    return decorator
 
 # Server adapter
 
