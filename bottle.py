@@ -86,6 +86,7 @@ from tempfile import TemporaryFile
 from traceback import format_exc
 from urllib import quote as urlquote
 from urlparse import urlunsplit, urljoin
+from weakref import WeakKeyDictionary
 
 try:
     from collections import MutableMapping as DictMixin
@@ -560,7 +561,7 @@ class Bottle(object):
             return [tob(err)]
 
 
-class Request(threading.local, DictMixin):
+class BaseRequest(DictMixin):
     """ Represents a single HTTP request using thread-local attributes.
         The Request object wrapps a WSGI environment and can be used as such.
     """
@@ -787,7 +788,7 @@ class Request(threading.local, DictMixin):
 
 
 
-class Response(threading.local):
+class BaseResponse():
     """ Represents a single HTTP response using thread-local attributes.
     """
 
@@ -863,7 +864,83 @@ class Response(threading.local):
                             get_content_type.__doc__)
 
 
+class ContextLocal(object):
+    ''' A flexible baseclass to build context local objects. '''
+    __slots__ = ('_local_init', '_local_context')
 
+    def __new__(cls, *args, **kwargs):
+        self = object.__new__(cls)
+        object.__setattr__(self, '_local_init', (args, kwargs))
+        object.__setattr__(self, '_local_context', {})
+        return self
+
+    @staticmethod
+    def context_ident():
+        """ Return a hashable identiofier for the curent context """
+        return 0
+
+    def set_context_ident(self, func):
+        """ Replace the :meth`context_ident` method with a new callable. """
+        object.__setattr__(self, 'context_ident', func)
+
+    def _local(self):
+        cur = self.context_ident()
+        if cur not in self._local_context:
+            self._local_context[cur] = {}
+            self.__init__(*self._local_init[0], **self._local_init[1])
+        return self._local_context[cur]
+
+    def __getattr__(self, attr):
+        try: return self._local()[attr]
+        except KeyError:
+            raise AttributeError(attr)
+
+    def __delattr__(self, attr):
+        try: del self._local()[attr]
+        except KeyError:
+            raise AttributeError(attr)
+
+    def __setattr__(self, attr, value):
+        self._local()[attr] = value
+
+
+class Request(threading.local, BaseRequest): pass
+class Response(threading.local, BaseResponse): pass
+class LocalRequest(ContextLocal, BaseRequest): pass
+class LocalResponse(ContextLocal, BaseResponse): pass
+
+def set_context_ident(ident=thread.get_ident, weakref=False):
+   ''' Change the function that identifies the current runtime context.
+   
+       This is done automatically by a server adapter.
+       
+       Some objects used by bottle need to be context local. By default, these
+       are local to the current thread: The instance’s values are different for
+       each separate threads. In environments where 'light' or 'mirco' threads
+       are used to parallelize requests, a singel thread may contain several
+       contexts and thread-locality is not sufficiand anymore.
+       
+       Example for greenlet::
+           from eventlet import greenthread
+           set_context_ident(greenthread.getcurrent, weakref=True)
+           
+       :param ident: Callable that returns a context identifyer when called
+                     within a context. (default: thread.get_ident)
+       :param weakref: If true, a weakref.WeakKeyDictionary() is used to store
+                       the context local stat. This allows the garbage collector
+                       to free memory as soon as the context terminates and 
+                       the return value of ident() is dereferenced.
+       '''
+   global request, response
+   if not isinstance(request, LocalRequest):
+       request = LocalRequest()
+   if not isinstance(response, LocalResponse):
+       response = LocalResponse()
+   request.set_context_ident(ident)
+   response.set_context_ident(ident)
+   if weakref:
+       object.__setattr__(request, '_local_context', WeakKeyDictionary())
+       object.__setattr__(response, '_local_context', WeakKeyDictionary())
 
 
 
@@ -1157,42 +1234,45 @@ class ServerAdapter(object):
         self.host = host
         self.port = int(port)
 
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         pass
-        
+
+    def set_context_ident(self, func, weakref=False):
+       set_context_ident(func, weakref)
+
     def __repr__(self):
         args = ', '.join(['%s=%s'%(k,repr(v)) for k, v in self.options.items()])
         return "%s(%s)" % (self.__class__.__name__, args)
 
 
 class CGIServer(ServerAdapter):
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         from wsgiref.handlers import CGIHandler
         CGIHandler().run(handler) # Just ignore host and port here
 
 
 class FlupFCGIServer(ServerAdapter):
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
        import flup.server.fcgi
        flup.server.fcgi.WSGIServer(handler, bindAddress=(self.host, self.port)).run()
 
 
 class WSGIRefServer(ServerAdapter):
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         from wsgiref.simple_server import make_server
         srv = make_server(self.host, self.port, handler)
         srv.serve_forever()
 
 
 class CherryPyServer(ServerAdapter):
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         from cherrypy import wsgiserver
         server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler)
         server.start()
 
 
 class PasteServer(ServerAdapter):
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         from paste import httpserver
         from paste.translogger import TransLogger
         app = TransLogger(handler)
@@ -1204,7 +1284,7 @@ class FapwsServer(ServerAdapter):
     Extremly fast webserver using libev.
     See http://william-os4y.livejournal.com/
     """
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         import fapws._evwsgi as evwsgi
         from fapws import base
         evwsgi.start(self.host, self.port)
@@ -1219,7 +1299,7 @@ class FapwsServer(ServerAdapter):
 class TornadoServer(ServerAdapter):
     """ Untested. As described here:
         http://github.com/facebook/tornado/blob/master/tornado/wsgi.py#L187 """
-    def run(self, handler): # pragma: no cover
+    def run(self, handler):
         import tornado.wsgi
         import tornado.httpserver
         import tornado.ioloop
@@ -1261,16 +1341,18 @@ class DieselServer(ServerAdapter):
 class GunicornServer(ServerAdapter):
     """ Untested. """
     def run(self, handler):
-        import gunicorn.arbiter
-        gunicorn.arbiter.Arbiter((self.host, self.port), 4, handler).run()
-    
+        from gunicorn.arbiter import Arbiter
+        from gunicorn.config import Config
+        arbiter = Arbiter(Config({'bind': "%s:%d" % (self.host, self.port), 'workers': 4}), handler)
+
 
 class EventletServer(ServerAdapter):
     """ Untested """
     def run(self, handler):
-        from eventlet import wsgi, listen
+        from eventlet import wsgi, listen, greenthread
+        self.set_context_ident(greenthread.getcurrent, weakref=True)
         wsgi.server(listen((self.host, self.port)), handler)
-        
+
 
 class AutoServer(ServerAdapter):
     """ Untested. """
@@ -1293,7 +1375,7 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
         server = server(host=host, port=port, **kargs)
     if not isinstance(server, ServerAdapter):
         raise RuntimeError("Server must be a subclass of WSGIAdapter")
-    if not quiet and isinstance(server, ServerAdapter): # pragma: no cover
+    if not quiet and isinstance(server, ServerAdapter):
         if not reloader or os.environ.get('BOTTLE_CHILD') == 'true':
             print "Bottle server starting up (using %s)..." % repr(server)
             print "Listening on http://%s:%d/" % (server.host, server.port)
@@ -1307,7 +1389,7 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
         else:
             server.run(app)
     except KeyboardInterrupt:
-        if not quiet: # pragma: no cover
+        if not quiet:
             print "Shutting Down..."
 
 
@@ -1757,9 +1839,6 @@ It is thread-safe and can be accessed from within handler functions. """
 response = Response()
 """ The :class:`Bottle` WSGI handler uses metasata assigned to this instance
 of :class:`Response` to generate the WSGI response. """
-
-local = threading.local()
-""" Thread-local namespace. Not used by Bottle, but could get handy """
 
 # Initialize app stack (create first empty Bottle app)
 # BC: 0.6.4 and needed for run()
