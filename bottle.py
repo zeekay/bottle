@@ -1347,11 +1347,20 @@ class GunicornServer(ServerAdapter):
 
 
 class EventletServer(ServerAdapter):
-    """ Untested """
+    """ Untested. """
     def run(self, handler):
         from eventlet import wsgi, listen, greenthread
         self.set_context_ident(greenthread.getcurrent, weakref=True)
         wsgi.server(listen((self.host, self.port)), handler)
+
+
+class GeventServer(ServerAdapter):
+    """ Untested. """
+    def run(self, handler):
+        from gevent import wsgi
+        from gevent.hub import getcurrent
+        self.set_context_ident(getcurrent, weakref=True)
+        wsgi.WSGIServer((self.host, self.port), handler).serve_forever()
 
 
 class AutoServer(ServerAdapter):
