@@ -62,7 +62,7 @@ This is an example::
 from __future__ import with_statement
 
 __author__ = 'Marcel Hellkamp'
-__version__ = '0.8.0'
+__version__ = '0.8dev'
 __license__ = 'MIT'
 
 import base64
@@ -115,13 +115,17 @@ if sys.version_info >= (3,0,0): # pragma: no cover
     # See Request.POST
     from io import BytesIO
     from io import TextIOWrapper
+    class NCTextIOWrapper(TextIOWrapper):
+        ''' Garbage collecting an io.TextIOWrapper(buffer) instance closes the
+            wrapped buffer. This subclass keeps it open. '''
+        def close(self): pass
     StringType = bytes
     def touni(x, enc='utf8'): # Convert anything to unicode (py3)
         return str(x, encoding=enc) if isinstance(x, bytes) else str(x)
 else:
     from StringIO import StringIO as BytesIO
     from types import StringType
-    TextIOWrapper = None
+    NCTextIOWrapper = None
     def touni(x, enc='utf8'): # Convert anything to unicode (py2)
         return x if isinstance(x, unicode) else unicode(str(x), encoding=enc)
 
@@ -695,8 +699,10 @@ class BaseRequest(DictMixin):
             safe_env = {'QUERY_STRING':''} # Build a safe environment for cgi
             for key in ('REQUEST_METHOD', 'CONTENT_TYPE', 'CONTENT_LENGTH'):
                 if key in self.environ: safe_env[key] = self.environ[key]
-            if TextIOWrapper:
-                fb = TextIOWrapper(self.body, encoding='ISO-8859-1')
+            if NCTextIOWrapper:
+                fb = NCTextIOWrapper(self.body, encoding='ISO-8859-1', newline='\n')
+                # TODO: Content-Length may be wrong now. Does cgi.FieldStorage
+                # use it at all? I think not, because all tests pass.
             else:
                 fb = self.body
             data = cgi.FieldStorage(fp=fb, environ=safe_env, keep_blank_values=True)
@@ -1363,6 +1369,15 @@ class GeventServer(ServerAdapter):
         wsgi.WSGIServer((self.host, self.port), handler).serve_forever()
 
 
+class RocketServer(ServerAdapter):
+    """ Untested. As requested in issue 63
+        http://github.com/defnull/bottle/issues/#issue/63 """
+    def run(self, handler):
+        from rocket import Rocket
+        server = Rocket((self.host, self.port), 'wsgi', { 'wsgi_app' : handler })
+        server.start()
+            
+        
 class AutoServer(ServerAdapter):
     """ Untested. """
     adapters = [CherryPyServer, PasteServer, TwistedServer, WSGIRefServer]
@@ -1556,10 +1571,12 @@ class CheetahTemplate(BaseTemplate):
 
 
 class Jinja2Template(BaseTemplate):
-    def prepare(self, prefix='#', filters=None, tests=None):
+    def prepare(self, filters=None, tests=None, **kwargs):
         from jinja2 import Environment, FunctionLoader
-        self.env = Environment(line_statement_prefix=prefix,
-                               loader=FunctionLoader(self.loader))
+        if 'prefix' in kwargs: # TODO: to be removed after a while
+            raise RuntimeError('The keyword argument `prefix` has been removed. '
+                'Use the full jinja2 environment name line_statement_prefix instead.')
+        self.env = Environment(loader=FunctionLoader(self.loader), **kwargs)
         if filters: self.env.filters.update(filters)
         if tests: self.env.tests.update(tests)
         if self.source:
@@ -1575,12 +1592,12 @@ class Jinja2Template(BaseTemplate):
     def loader(self, name):
         fname = self.search(name, self.lookup)
         if fname:
-            with open(fname) as f:
+            with open(fname, "rb") as f:
                 return f.read().decode(self.encoding)
 
 
 class SimpleTemplate(BaseTemplate):
-    blocks = ('if','elif','else','except','finally','for','while','with','def','class')
+    blocks = ('if','elif','else','try','except','finally','for','while','with','def','class')
     dedent_blocks = ('elif', 'else', 'except', 'finally')
 
     def prepare(self, escape_func=cgi.escape, noescape=False):
@@ -1811,32 +1828,36 @@ HTTP_CODES = {
 
 
 ERROR_PAGE_TEMPLATE = SimpleTemplate("""
-%from bottle import DEBUG, HTTP_CODES, request
-%status_name = HTTP_CODES.get(e.status, 'Unknown').title()
-<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-<html>
-    <head>
-        <title>Error {{e.status}}: {{status_name}}</title>
-        <style type="text/css">
-          html {background-color: #eee; font-family: sans;}
-          body {background-color: #fff; border: 1px solid #ddd; padding: 15px; margin: 15px;}
-          pre {background-color: #eee; border: 1px solid #ddd; padding: 5px;}
-        </style>
-    </head>
-    <body>
-        <h1>Error {{e.status}}: {{status_name}}</h1>
-        <p>Sorry, the requested URL <tt>{{request.url}}</tt> caused an error:</p>
-        <pre>{{str(e.output)}}</pre>
-        %if DEBUG and e.exception:
-          <h2>Exception:</h2>
-          <pre>{{repr(e.exception)}}</pre>
-        %end
-        %if DEBUG and e.traceback:
-          <h2>Traceback:</h2>
-          <pre>{{e.traceback}}</pre>
-        %end
-    </body>
-</html>
+%try:
+    %from bottle import DEBUG, HTTP_CODES, request
+    %status_name = HTTP_CODES.get(e.status, 'Unknown').title()
+    <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+    <html>
+        <head>
+            <title>Error {{e.status}}: {{status_name}}</title>
+            <style type="text/css">
+              html {background-color: #eee; font-family: sans;}
+              body {background-color: #fff; border: 1px solid #ddd; padding: 15px; margin: 15px;}
+              pre {background-color: #eee; border: 1px solid #ddd; padding: 5px;}
+            </style>
+        </head>
+        <body>
+            <h1>Error {{e.status}}: {{status_name}}</h1>
+            <p>Sorry, the requested URL <tt>{{request.url}}</tt> caused an error:</p>
+            <pre>{{str(e.output)}}</pre>
+            %if DEBUG and e.exception:
+              <h2>Exception:</h2>
+              <pre>{{repr(e.exception)}}</pre>
+            %end
+            %if DEBUG and e.traceback:
+              <h2>Traceback:</h2>
+              <pre>{{e.traceback}}</pre>
+            %end
+        </body>
+    </html>
+%except ImportError:
+    <b>ImportError:</b> Could not generate the error page. Please add bottle to sys.path
+%end
 """)
 """ The HTML template used for error messages """
 
