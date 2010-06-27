@@ -914,12 +914,14 @@ class ContextLocal(object):
 
     @staticmethod
     def context_ident():
-        """ Return a hashable identiofier for the curent context """
+        """ Return a hashable identifier for the curent context """
         return 0
 
-    def set_context_ident(self, func):
+    def set_context_ident(self, func, weakref=False):
         """ Replace the :meth`context_ident` method with a new callable. """
         object.__setattr__(self, 'context_ident', func)
+        object.__setattr__(self, '_local_context',
+                                 WeakKeyDictionary() if weakref else {})
 
     def _local(self):
         cur = self.context_ident()
@@ -974,11 +976,8 @@ def set_context_ident(ident=thread.get_ident, weakref=False):
        request = LocalRequest()
    if not isinstance(response, LocalResponse):
        response = LocalResponse()
-   request.set_context_ident(ident)
-   response.set_context_ident(ident)
-   if weakref:
-       object.__setattr__(request, '_local_context', WeakKeyDictionary())
-       object.__setattr__(response, '_local_context', WeakKeyDictionary())
+   request.set_context_ident(ident, weakref)
+   response.set_context_ident(ident, weakref)
 
 
 
