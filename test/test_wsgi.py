@@ -17,7 +17,7 @@ class TestWsgi(ServerTestBase):
         @bottle.route('/')
         def test(): return 'test'
         self.assertStatus(404, '/not/found')
-        self.assertStatus(404, '/', post="var=value")
+        self.assertStatus(405, '/', post="var=value")
         self.assertBody('test', '/')
 
     def test_post(self):
@@ -25,7 +25,7 @@ class TestWsgi(ServerTestBase):
         @bottle.route('/', method='POST')
         def test(): return 'test'
         self.assertStatus(404, '/not/found')
-        self.assertStatus(404, '/')
+        self.assertStatus(405, '/')
         self.assertBody('test', '/', post="var=value")
 
     def test_headget(self):
@@ -35,13 +35,25 @@ class TestWsgi(ServerTestBase):
         @bottle.route('/head', method='HEAD')
         def test2(): return 'test'
         # GET -> HEAD
-        self.assertStatus(404, '/head')
+        self.assertStatus(405, '/head')
         # HEAD -> HEAD
         self.assertStatus(200, '/head', method='HEAD')
         self.assertBody('', '/head', method='HEAD')
         # HEAD -> GET
         self.assertStatus(200, '/get', method='HEAD')
         self.assertBody('', '/get', method='HEAD')
+
+    def get304(self):
+        """ 304 responses must not return entity headers """
+        bad = ('allow', 'content-encoding', 'content-language',
+               'content-length', 'content-md5', 'content-range',
+               'content-type', 'last-modified') # + c-location, expires?
+        for h in bad:
+            bottle.response.set_header(h, 'foo')
+        bottle.status = 304
+        for h, v in bottle.response.headerlist:
+            self.assertFalse(h.lower() in bad, "Header %s not deleted" % h)
+            
 
     def test_anymethod(self):
         self.assertStatus(404, '/any')
@@ -156,6 +168,18 @@ class TestDecorators(ServerTestBase):
         self.assertStatus(403,'/')
         self.assertStatus(200,'/5')
         self.assertBody('xxx', '/3')
+
+    def test_truncate_body(self):
+        """ WSGI: Some HTTP status codes must not be used with a response-body """
+        @bottle.route('/test/:code')
+        def test(code):
+            bottle.response.status = int(code)
+            return 'Some body content'
+        self.assertBody('Some body content', '/test/200')
+        self.assertBody('', '/test/100')
+        self.assertBody('', '/test/101')
+        self.assertBody('', '/test/204')
+        self.assertBody('', '/test/304')
 
     def test_routebuild(self):
         """ WSGI: Test validate-decorator"""

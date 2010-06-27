@@ -35,8 +35,8 @@ class TestSendFile(unittest.TestCase):
         e = dict()
         wsgiref.util.setup_testing_defaults(e)
         b = Bottle()
-        request.bind(e, b)
-        response.bind(b)
+        request.bind(e)
+        response.bind()
 
     def test_valid(self):
         """ SendFile: Valid requests"""
@@ -47,11 +47,11 @@ class TestSendFile(unittest.TestCase):
         """ SendFile: Invalid requests"""
         self.assertEqual(404, static_file('not/a/file', root='./').status)
         f = static_file(os.path.join('./../', os.path.basename(__file__)), root='./views/')
-        self.assertEqual(401, f.status)
+        self.assertEqual(403, f.status)
         try:
             fp, fn = tempfile.mkstemp()
             os.chmod(fn, 0)
-            self.assertEqual(401, static_file(fn, root='/').status)
+            self.assertEqual(403, static_file(fn, root='/').status)
         finally:
             os.close(fp)
             os.unlink(fn)
@@ -68,7 +68,10 @@ class TestSendFile(unittest.TestCase):
     def test_ims(self):
         """ SendFile: If-Modified-Since"""
         request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
-        self.assertEqual(304, static_file(os.path.basename(__file__), root='./').status)
+        res = static_file(os.path.basename(__file__), root='./')
+        self.assertEqual(304, res.status)
+        self.assertEqual(int(os.stat(__file__).st_mtime), parse_date(res.headers['Last-Modified']))
+        self.assertAlmostEqual(int(time.time()), parse_date(res.headers['Date']))
         request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
         self.assertEqual(open(__file__,'rb').read(), static_file(os.path.basename(__file__), root='./').output.read())
 

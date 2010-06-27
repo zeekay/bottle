@@ -15,12 +15,18 @@ from StringIO import StringIO
 try:
     from io import BytesIO
 except:
+    BytesIO = None
     pass
 import mimetypes
 import uuid
 
 def tob(data):
+    ''' Transforms bytes or unicode into bytes. '''
     return data.encode('utf8') if isinstance(data, unicode) else data
+
+def tobs(data):
+    ''' Transforms bytes or unicode into a byte stream. '''
+    return BytesIO(tob(data)) if BytesIO else StringIO(tob(data))
 
 class ServerTestBase(unittest.TestCase):
     def setUp(self):
@@ -75,9 +81,9 @@ class ServerTestBase(unittest.TestCase):
         self.assertEqual(tob(body), self.urlopen(route, **kargs)['body'])
 
     def assertInBody(self, body, route='/', **kargs):
-        body = self.urlopen(route, **kargs)['body']
-        if tob(body) not in body:
-            self.fail('The search pattern "%s" is not included in body:\n%s' % (body, body))
+        result = self.urlopen(route, **kargs)['body']
+        if tob(body) not in result:
+            self.fail('The search pattern "%s" is not included in body:\n%s' % (body, result))
 
     def assertHeader(self, name, value, route='/', **kargs):
         self.assertEqual(value, self.urlopen(route, **kargs)['header'].get(name))
