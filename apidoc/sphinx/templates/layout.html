@@ -1,8 +1,16 @@
 {% extends "!layout.html" %}
+
 {% block extrahead %}
     <link rel="shortcut icon" type="image/x-icon" href="{{ pathto('_static/favicon.ico', 1) }}" />
-{{ super() }}
+    <link rel="image_src" type="image/png" href="http://bottle.paws.de/docs/dev/_static/logo_reddit.png" />
+    {{ super() }}
 {% endblock %}
+
+{% block rootrellink %}
+    <li><a href="/">Project Home</a> &raquo;</li>
+    {{ super() }}
+{% endblock %}
+
 {% block footer %}
     <div class="footer">
     &copy; <a href="{{ pathto('index') }}licence">Copyright</a> {{ copyright|e }} - <a href="{{ pathto('contact') }}">Contact</a><br />

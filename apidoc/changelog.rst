@@ -5,29 +5,48 @@
 Release Notes and Changelog
 ===========================
 
-Release 0.7
+
+Release 0.9 
+===========
+
+This changes are not released yet and are only part of the development documentation.
+
+.. rubric:: New Features
+
+* A new hook-API to inject code immediately before or after the execution of handler callbacks.
+
+
+Bugfix Release 0.8.2
+=====================
+
+* Added backward compatibility wrappers and deprecation warnings to some of the API changes.
+* Fixed "FileCheckerThread seems to fail on eggs" (Issue #87)
+* Fixed "Bottle.get_url() does not return correct path when SCRIPT_NAME is set." (Issue #83)
+
+
+Release 0.8
 ===========
 
 .. rubric:: API changes 
 
-
 These changes may break compatibility with previous versions.
 
-* The build-in Key/Value database is not available anymore. It is marked deprecated since 0.6.4
+* The built-in Key/Value database is not available anymore. It is marked deprecated since 0.6.4
 * The Route syntax and behaviour changed.
 
   * Regular expressions must be encapsulated with ``#``. In 0.6 all non-alphanumeric characters not present in the regular expression were allowed.
   * Regular expressions not part of a route wildcard are escaped automatically. You don't have to escape dots or other regular control characters anymore. In 0.6 the whole URL was interpreted as a regular expression. You can use anonymous wildcards (``/index:#(\.html)?#``) to achieve a similar behaviour.
-  * Wildcards are escaped with a second colon (``/path/::not_a_wildcard``).
 
-* The ``BreakTheBottle`` exception is gone. Use :class:`HTTPResponse`` instead.
+* The ``BreakTheBottle`` exception is gone. Use :class:`HTTPResponse` instead.
 * The :class:`SimpleTemplate` engine escapes HTML special characters in ``{{bad_html}}`` expressions automatically. Use the new ``{{!good_html}}`` syntax to get old behaviour (no escaping).
 * The :class:`SimpleTemplate` engine returns unicode strings instead of lists of byte strings.
 * ``bottle.optimize()`` and the automatic route optimization is obsolete.
-* :attr:`Request._environ` was renamed to :attr:`Request.environ`
+* Some functions and attributes were renamed:
+  * :attr:`Request._environ` is now :attr:`Request.environ`
+  * :attr:`Response.header` is now :attr:`Response.headers`
+  * :func:`default_app` is obsolete. Use :func:`app` instead.
 * The default :func:`redirect` code changed from 307 to 303.
 * Removed support for ``@default``. Use ``@error(404)`` instead.
-* `default_app()` is obsolete. Use :func:`app` instead.
 
 .. rubric:: New features
 
