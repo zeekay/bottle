@@ -1513,15 +1513,6 @@ class DieselServer(ServerAdapter):
         app.run()
 
 
-class GeventServer(ServerAdapter):
-    """ Untested. """
-    def run(self, handler):
-        from gevent import wsgi
-        from gevent.hub import getcurrent
-        self.set_context_ident(getcurrent, weakref=True) # see contextlocal
-        wsgi.WSGIServer((self.host, self.port), handler).serve_forever()
-
-
 class GunicornServer(ServerAdapter):
     """ Untested. """
     def run(self, handler):
