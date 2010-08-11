@@ -1058,34 +1058,35 @@ class LocalRequest(ContextLocal, BaseRequest): pass
 class LocalResponse(ContextLocal, BaseResponse): pass
 
 def set_context_ident(ident=thread.get_ident, weakref=False):
-   ''' Change the function that identifies the current runtime context.
+    ''' Change the function that identifies the current runtime context.
    
-       This is done automatically by a server adapter.
+        This is done automatically by a server adapter.
        
-       Some objects used by bottle need to be context local. By default, these
-       are local to the current thread: The instance’s values are different for
-       each separate threads. In environments where 'light' or 'mirco' threads
-       are used to parallelize requests, a singel thread may contain several
-       contexts and thread-locality is not sufficiand anymore.
+        Some objects used by bottle need to be context local. By default, these
+        are local to the current thread: The instance’s values are different for
+        each separate threads. In environments where 'light' or 'mirco' threads
+        are used to parallelize requests, a singel thread may contain several
+        contexts and thread-locality is not sufficiand anymore.
        
-       Example for greenlet::
-           from eventlet import greenthread
-           set_context_ident(greenthread.getcurrent, weakref=True)
+        Example for greenlet::
+            from eventlet import greenthread
+            set_context_ident(greenthread.getcurrent, weakref=True)
            
-       :param ident: Callable that returns a context identifyer when called
-                     within a context. (default: thread.get_ident)
-       :param weakref: If true, a weakref.WeakKeyDictionary() is used to store
-                       the context local stat. This allows the garbage collector
-                       to free memory as soon as the context terminates and 
-                       the return value of ident() is dereferenced.
-       '''
-   global request, response
-   if not isinstance(request, LocalRequest):
-       request = LocalRequest()
-   if not isinstance(response, LocalResponse):
-       response = LocalResponse()
-   request.set_context_ident(ident, weakref)
-   response.set_context_ident(ident, weakref)
+        :param ident: Callable that returns a context identifyer when called
+                      within a context. (default: thread.get_ident)
+        :param weakref: If true, a weakref.WeakKeyDictionary() is used to store
+                        the context local stat. This allows the garbage collector
+                        to free memory as soon as the context terminates and 
+                        the return value of ident() is dereferenced.
+        '''
+    global request, response
+    if ident == thread.get_ident:
+        # threading.local is faster than the customizable implementation.
+	request, response = Request(), Response()
+    else:
+	request, response = LocalRequest(), LocalResponse()
+        request.set_context_ident(ident, weakref)
+        response.set_context_ident(ident, weakref)
 
 
 
