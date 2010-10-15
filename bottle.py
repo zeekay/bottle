@@ -1907,7 +1907,8 @@ class SimpleTALTemplate(BaseTemplate):
 
 
 class SimpleTemplate(BaseTemplate):
-    blocks = ('if','elif','else','try','except','finally','for','while','with','def','class')
+    blocks = ('if','elif','else','try','except','finally',
+              'for','while','with','def','class')
     dedent_blocks = ('elif', 'else', 'except', 'finally')
 
     def prepare(self, escape_func=cgi.escape, noescape=False):
@@ -2032,6 +2033,129 @@ class SimpleTemplate(BaseTemplate):
         env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
                '_include': self.subtemplate, '_str': self._str,
                '_escape': self._escape})
+        env.update(kwargs)
+        eval(self.co, env)
+        if '_rebase' in env:
+            subtpl, rargs = env['_rebase']
+            subtpl = self.__class__(name=subtpl, lookup=self.lookup)
+            rargs['_base'] = _stdout[:] #copy stdout
+            del _stdout[:] # clear stdout
+            return subtpl.execute(_stdout, rargs)
+        return env
+
+    def render(self, *args, **kwargs):
+        """ Render the template using keyword arguments as local variables. """
+        for dictarg in args: kwargs.update(dictarg)
+        stdout = []
+        self.execute(stdout, kwargs)
+        return ''.join(stdout)
+
+
+
+class StplSyntaxError(TemplateError): pass
+
+class StplTemplate(BaseTemplate):
+    ''' This is basically SimpleTemplate v2.
+        
+        New Features:
+            * Python blocks: <% ... %>
+            * ~1.5x faster template compilation.
+            * Better (more strict and predictable) indentation algorithm.
+        
+        TODO:
+            * rebase. This time with shared namespace.
+            * include.
+            * Lots of tests...
+    '''
+    # Patterns for templates and inline statements (TODO: simplify?)
+    re_tpltokens = re.compile('(?:^|(?<=\n))[ \\t]*(?:<%((?:.|\\n)+?)%>[ \\t]*'\
+                                                     '|%(.*))(?:\n|$)')
+    re_inline = re.compile(r'\{\{(.*?)\}\}')
+    # Pattern to tokenize python code. We distinguish 5 types of code segments:
+    # This monster pattern matches all kinds of quoted strings and comments.
+    _re_pytokens =  '([urbURB]?(?:\'\'(?!\')|""(?!")|\'\'\'\'\'\'|""""""' \
+                     '|\'(?:[^\\\\\']|\\\\.)+?\'|"(?:[^\\\\"]|\\\\.)+?"' \
+                     '|\'\'\'(?:[^\\\\]|\\\\.|\\n)+?\'\'\'' \
+                     '|"""(?:[^\\\\]|\\\\.|\\n)+?""")|#.*)'
+    # Match compound statement keywords that imply indentation changes.
+    _re_pytokens += '|^([ \\t]*(?:if|for|while|with|try|def|class)\\b)'
+    _re_pytokens += '|^([ \\t]*(?:elif|else|except|finally)\\b)'
+    # Additionaly, we need to match the custom 'end' keyword.
+    _re_pytokens += '|((?:^|;)[ \\t]*end[ \\t]*(?=$|;|#))'
+    _re_pytokens += '|(\\n)' # Match a single newline
+    re_pytokens = re.compile(_re_pytokens, re.MULTILINE)
+
+    def prepare(self, escape_func=cgi.escape, noescape=False):
+        self.cache = {}
+        enc = self.encoding
+        self._str = lambda x: touni(x, enc)
+        self._esc = lambda x: escape_func(touni(x, enc))
+        if noescape: self._str, self._escape = self._escape, self._str
+        if self.source:
+            self.code = self.translate(touni(self.source, enc))
+            self.co = compile(self.code, '<string>', 'exec')
+        else:
+            with open(self.filename) as fp:
+                self.code = self.translate(touni(fp.read(), enc))
+            self.co = compile(self.code, self.filename, 'exec')
+
+    def translate(self, code):
+        ''' Convert template code into python code. '''
+        output = ''
+        for i, data in enumerate(self.re_tpltokens.split(code)):
+            if not data: continue
+            if not i%3: data = self.codify(data)
+            output += data + '\n'
+        return self.fix_indentation(output)
+
+    def codify(self, text, printfunc='_printlist((%s, ))'):
+        ''' Convert text with in-line statements into print calls. '''
+        if text.endswith('\\\\\n'): text = text[:-3]
+        parts = []
+        for i, part in enumerate(self.re_inline.split(text)):
+            if not part: continue
+            if i % 2:
+                part = part.strip()
+                if part[0] == '!': parts.append('_str(%s)' % part[1:])
+                else:              parts.append('_esc(%s)' % part)
+            else: parts.append(repr(part) + '\n' * part.count('\n'))
+        return printfunc % ' ,'.join(parts)[:-1] # remove last newline
+
+    def fix_indentation(self, code):
+        ''' Convert a custom python dialect into real python code.
+            The dialect uses an 'end' keyword to close compound statements
+            (e.g. if-elif-else-end) instead of code indentation. '''
+        lastmatch, lineno, indent, indentmod, esc = 0, 1, 0, 0, False
+        cline, output = '', '' # Buffer for current line and code output.
+        for i, data in enumerate(self.re_pytokens.split(code.rstrip() + '\n')):
+            i %= 6 # => 0:OTHER, 1:STRING, 2:BLOCK, 3:DBLOCK, 4:END, 5:NEWLINE
+            if not data: continue
+            if not esc:
+              if   i==2: indent += 1; indentmod -= 1; # if:
+              elif i==3:              indentmod -= 1; # else:
+              elif i==4: indent -= 1; indentmod += 1; # end
+            if i<=3: cline += data # All but NEWLINE and END
+            if i==5: # NEWLINE
+                if indent < 0 or indent+indentmod < 0:
+                    msg = 'Indentation error in line %s near %s.'
+                    raise StplSyntaxError(msg % (lineno, repr(cline.strip())))
+                output += '  '*(indent+indentmod) + cline.strip() + '\n'
+                cline, indentmod, esc = '', 0, cline.rstrip().endswith('\\')
+                lineno += 1
+        return output
+
+    def subtemplate(self, _name, _stdout, *args, **kwargs):
+        for dictarg in args: kwargs.update(dictarg)
+        if _name not in self.cache:
+            self.cache[_name] = self.__class__(name=_name, lookup=self.lookup)
+        return self.cache[_name].execute(_stdout, kwargs)
+
+    def execute(self, _stdout, *args, **kwargs):
+        for dictarg in args: kwargs.update(dictarg)
+        env = self.defaults.copy()
+        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
+               '_include': self.subtemplate, '_str': self._str,
+               '_esc': self._esc})
         env.update(kwargs)
         eval(self.co, env)
         if '_rebase' in env:
