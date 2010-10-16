@@ -1760,6 +1760,7 @@ class BaseTemplate(object):
         """
         self.name = name
         self.source = source.read() if hasattr(source, 'read') else source
+        if hasattr(source, 'close'): source.close()
         self.filename = source.filename if hasattr(source, 'filename') else None
         self.lookup = map(os.path.abspath, lookup)
         self.encoding = encoding
@@ -2059,13 +2060,15 @@ class StplTemplate(BaseTemplate):
         
         New Features:
             * Python blocks: <% ... %>
-            * ~1.5x faster template compilation.
+            * ~1.5x faster template parsing.
             * Better (more strict and predictable) indentation algorithm.
-        
-        TODO:
-            * rebase. This time with shared namespace.
-            * include.
-            * Lots of tests...
+        Changes:
+            * ``rebase`` and ``include`` are functions now.
+            * The namespace of a calling template is available to the called
+              sub-template. Explicitly passing variables to rebase() or
+              include() is no longer necessary, but still possible.
+            * The result of a rebased template is stored in ``body`` as a single
+              string.
     '''
     # Patterns for templates and inline statements (TODO: simplify?)
     re_tpltokens = re.compile('(?:^|(?<=\n))[ \\t]*(?:<%((?:.|\\n)+?)%>[ \\t]*'\
@@ -2119,7 +2122,8 @@ class StplTemplate(BaseTemplate):
                 if part[0] == '!': parts.append('_str(%s)' % part[1:])
                 else:              parts.append('_esc(%s)' % part)
             else: parts.append(repr(part) + '\n' * part.count('\n'))
-        return printfunc % ' ,'.join(parts)[:-1] # remove last newline
+        if '\n' in parts[-1]: parts[-1] = parts[-1][:-1]
+        return printfunc % ' ,'.join(parts) # remove last newline
 
     def fix_indentation(self, code):
         ''' Convert a custom python dialect into real python code.
@@ -2144,26 +2148,34 @@ class StplTemplate(BaseTemplate):
                 lineno += 1
         return output
 
-    def subtemplate(self, _name, _stdout, *args, **kwargs):
-        for dictarg in args: kwargs.update(dictarg)
+    def _include(self, _env, _name, *a, **ka):
+        ''' Print a sub-template and return its namespace. '''
         if _name not in self.cache:
             self.cache[_name] = self.__class__(name=_name, lookup=self.lookup)
-        return self.cache[_name].execute(_stdout, kwargs)
+        return self.cache[_name].execute(_env['_stdout'], _env, *a, **ka)
+
+    def _rebase(self, _env, _name, *a, **ka):
+        _env['_rebase'] = (_name, a, ka)
 
     def execute(self, _stdout, *args, **kwargs):
-        for dictarg in args: kwargs.update(dictarg)
+        # Build and setup the template namespace
         env = self.defaults.copy()
-        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
-               '_include': self.subtemplate, '_str': self._str,
-               '_esc': self._esc})
+        for dictarg in args: env.update(dictarg)
         env.update(kwargs)
+        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
+               '_str': self._str, '_esc': self._esc, '_rebase': None,
+               'include': functools.partial(self._include, env),
+               'rebase': functools.partial(self._rebase, env)})
+        # Render template now.
         eval(self.co, env)
-        if '_rebase' in env:
-            subtpl, rargs = env['_rebase']
-            subtpl = self.__class__(name=subtpl, lookup=self.lookup)
-            rargs['_base'] = _stdout[:] #copy stdout
-            del _stdout[:] # clear stdout
-            return subtpl.execute(_stdout, rargs)
+        # Check if template requested a rebase
+        if env['_rebase']:
+            subtpl, args, kwargs = env.pop('_rebase')
+            kwargs['body'] = ''.join(_stdout[:]) # save stdout for later use
+            del _stdout[:] # clear stdout but keep the reference
+            if subtpl not in self.cache:
+                self.cache[subtpl] = self.__class__(name=subtpl, lookup=self.lookup)
+            return self.cache[subtpl].execute(_stdout, env, *args, **kwargs)
         return env
 
     def render(self, *args, **kwargs):
