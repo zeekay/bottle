@@ -2057,18 +2057,30 @@ class StplSyntaxError(TemplateError): pass
 
 class StplTemplate(BaseTemplate):
     ''' This is basically SimpleTemplate v2.
-        
+
         New Features:
             * Python blocks: <% ... %>
             * ~1.5x faster template parsing.
             * Better (more strict and predictable) indentation algorithm.
+            * The namespace of a calling template is available to the called
+              sub-template. Explicitly passing variables to `rebase()` or
+              `include()` is no longer necessary, but still possible.
+            * In base-templates, ``body`` contains the text of the main
+              template. Use ``{{body}}`` to print it.
         Changes:
             * ``rebase`` and ``include`` are functions now.
-            * The namespace of a calling template is available to the called
-              sub-template. Explicitly passing variables to rebase() or
-              include() is no longer necessary, but still possible.
-            * The result of a rebased template is stored in ``body`` as a single
-              string.
+            * Inline-statements that do not return unicode are limited to ASCII.
+              They are not automatically encoded any more. Use unicode or encode
+              yourself if you need non-ASCII characters. In return, rendering
+              speed is much better. STPL beats all other template engines in the
+              jinja2 bench now.
+
+        :param escape: The default filter for in-line statements.
+                       (default: cgi.escape(str(x)) )
+        :param encoding: This encoding is used to decode template files.
+                         It is NOT used to encode the output.
+        :param debug: If set, templates will be slower but produce more
+                      helpful error messages.
     '''
     # Patterns for templates and inline statements (TODO: simplify?)
     re_tpltokens = re.compile('(?:^|(?<=\n))[ \\t]*(?:<%((?:.|\\n)+?)%>[ \\t]*'\
@@ -2088,19 +2100,58 @@ class StplTemplate(BaseTemplate):
     _re_pytokens += '|(\\n)' # Match a single newline
     re_pytokens = re.compile(_re_pytokens, re.MULTILINE)
 
-    def prepare(self, escape_func=cgi.escape, noescape=False):
-        self.cache = {}
-        enc = self.encoding
-        self._str = lambda x: touni(x, enc)
-        self._esc = lambda x: escape_func(touni(x, enc))
-        if noescape: self._str, self._escape = self._escape, self._str
-        if self.source:
-            self.code = self.translate(touni(self.source, enc))
-            self.co = compile(self.code, '<string>', 'exec')
-        else:
-            with open(self.filename) as fp:
-                self.code = self.translate(touni(fp.read(), enc))
-            self.co = compile(self.code, self.filename, 'exec')
+    def prepare(self, escape=None, encoding='utf8', debug=False):
+        self.cache = {} # Cache for subtemplates
+        if not escape:
+            def escape(x): return cgi.escape(str(x))
+        self.escape = escape
+        self.debug = debug
+        if not self.source:
+            with open(self.filename, 'r') as fp:
+                self.source = fp.read()
+        if not self.filename:
+            self.filename = '<string>'
+        if not isinstance(self.source, unicode):
+            self.source = unicode(self.source, encoding)
+        self.code = self.translate(self.source)
+        self.co = compile(self.code, self.filename, 'exec')
+
+    def render(self, *args, **kwargs):
+        """ Render the template using keyword arguments as local variables. """
+        for dictarg in args: kwargs.update(dictarg)
+        stdout = []
+        self.execute(stdout, kwargs)
+        return u''.join(stdout)
+
+    def _include(self, _env, _name, *a, **ka):
+        ''' Print a sub-template and return its namespace. '''
+        if _name not in self.cache:
+            self.cache[_name] = self.__class__(name=_name, lookup=self.lookup)
+        return self.cache[_name].execute(_env['_stdout'], _env, *a, **ka)
+
+    def _rebase(self, _env, _name, *a, **ka):
+        _env['_rebase'] = (_name, a, ka)
+
+    def execute(self, _stdout, *args, **kwargs):
+        # Build and setup the template namespace
+        env = self.defaults.copy()
+        for dictarg in args: env.update(dictarg)
+        env.update(kwargs)
+        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
+               '_esc': self.escape, '_rebase': None,
+               'include': functools.partial(self._include, env),
+               'rebase': functools.partial(self._rebase, env)})
+        # Render template now.
+        eval(self.co, env)
+        # Check if template requested a rebase
+        if env['_rebase']:
+            subtpl, args, kwargs = env.pop('_rebase')
+            kwargs['body'] = ''.join(_stdout[:]) # save stdout for later use
+            del _stdout[:] # clear stdout but keep the reference
+            if subtpl not in self.cache:
+                self.cache[subtpl] = self.__class__(name=subtpl, lookup=self.lookup)
+            return self.cache[subtpl].execute(_stdout, env, *args, **kwargs)
+        return env
 
     def translate(self, code):
         ''' Convert template code into python code. '''
@@ -2111,7 +2162,7 @@ class StplTemplate(BaseTemplate):
             output += data + '\n'
         return self.fix_indentation(output)
 
-    def codify(self, text, printfunc='_printlist((%s, ))'):
+    def codify(self, text):
         ''' Convert text with in-line statements into print calls. '''
         if text.endswith('\\\\\n'): text = text[:-3]
         parts = []
@@ -2119,11 +2170,13 @@ class StplTemplate(BaseTemplate):
             if not part: continue
             if i % 2:
                 part = part.strip()
-                if part[0] == '!': parts.append('_str(%s)' % part[1:])
+                if part[0] == '!':
+                    if self.debug: part = '!%s+(%s)' % (repr(u''), part[1:])
+                    parts.append(part[1:])
                 else:              parts.append('_esc(%s)' % part)
             else: parts.append(repr(part) + '\n' * part.count('\n'))
-        if '\n' in parts[-1]: parts[-1] = parts[-1][:-1]
-        return printfunc % ' ,'.join(parts) # remove last newline
+        if '\n' in parts[-1]: parts[-1] = parts[-1][:-1] # remove last newline
+        return '_printlist((%s, ))' % ' ,'.join(parts)
 
     def fix_indentation(self, code):
         ''' Convert a custom python dialect into real python code.
@@ -2148,42 +2201,7 @@ class StplTemplate(BaseTemplate):
                 lineno += 1
         return output
 
-    def _include(self, _env, _name, *a, **ka):
-        ''' Print a sub-template and return its namespace. '''
-        if _name not in self.cache:
-            self.cache[_name] = self.__class__(name=_name, lookup=self.lookup)
-        return self.cache[_name].execute(_env['_stdout'], _env, *a, **ka)
 
-    def _rebase(self, _env, _name, *a, **ka):
-        _env['_rebase'] = (_name, a, ka)
-
-    def execute(self, _stdout, *args, **kwargs):
-        # Build and setup the template namespace
-        env = self.defaults.copy()
-        for dictarg in args: env.update(dictarg)
-        env.update(kwargs)
-        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
-               '_str': self._str, '_esc': self._esc, '_rebase': None,
-               'include': functools.partial(self._include, env),
-               'rebase': functools.partial(self._rebase, env)})
-        # Render template now.
-        eval(self.co, env)
-        # Check if template requested a rebase
-        if env['_rebase']:
-            subtpl, args, kwargs = env.pop('_rebase')
-            kwargs['body'] = ''.join(_stdout[:]) # save stdout for later use
-            del _stdout[:] # clear stdout but keep the reference
-            if subtpl not in self.cache:
-                self.cache[subtpl] = self.__class__(name=subtpl, lookup=self.lookup)
-            return self.cache[subtpl].execute(_stdout, env, *args, **kwargs)
-        return env
-
-    def render(self, *args, **kwargs):
-        """ Render the template using keyword arguments as local variables. """
-        for dictarg in args: kwargs.update(dictarg)
-        stdout = []
-        self.execute(stdout, kwargs)
-        return ''.join(stdout)
 
 
 def template(*args, **kwargs):
