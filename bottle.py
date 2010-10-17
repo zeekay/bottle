@@ -2067,6 +2067,7 @@ class StplTemplate(BaseTemplate):
               `include()` is no longer necessary, but still possible.
             * In base-templates, ``body`` contains the text of the main
               template. Use ``{{body}}`` to print it.
+            * Preprocessor statements: {{=  }} and <%= %>
         Changes:
             * ``rebase`` and ``include`` are functions now.
             * Inline-statements that do not return unicode are limited to ASCII.
@@ -2103,8 +2104,12 @@ class StplTemplate(BaseTemplate):
     def prepare(self, escape=None, encoding='utf8', debug=False):
         self.cache = {} # Cache for subtemplates
         if not escape:
-            def escape(x): return cgi.escape(str(x))
+            def escape(x): return cgi.escape(unicode(x))
         self.escape = escape
+        # Preprocessing state
+        self.state = self.defaults.copy()
+        self.state.update({'_esc': escape, '_rebase': None,
+                           'Template': self.__class__})
         self.debug = debug
         if not self.source:
             with open(self.filename, 'r') as fp:
@@ -2134,11 +2139,10 @@ class StplTemplate(BaseTemplate):
 
     def execute(self, _stdout, *args, **kwargs):
         # Build and setup the template namespace
-        env = self.defaults.copy()
+        env = self.state.copy()
         for dictarg in args: env.update(dictarg)
         env.update(kwargs)
         env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
-               '_esc': self.escape, '_rebase': None,
                'include': functools.partial(self._include, env),
                'rebase': functools.partial(self._rebase, env)})
         # Render template now.
@@ -2158,6 +2162,11 @@ class StplTemplate(BaseTemplate):
         output = ''
         for i, data in enumerate(self.re_tpltokens.split(code)):
             if not data: continue
+            if data[0] == '=':
+                code = self.fix_indentation(data.replace('=', '', 1))
+                co = compile(code, '<tpl precompiler>', 'exec')
+                eval(co, self.state)
+                data = '\n' * data.count('\n')
             if not i%3: data = self.codify(data)
             output += data + '\n'
         return self.fix_indentation(output)
@@ -2171,10 +2180,12 @@ class StplTemplate(BaseTemplate):
             if i % 2:
                 part = part.strip()
                 if part[0] == '!':
-                    if self.debug: part = '!%s+(%s)' % (repr(u''), part[1:])
-                    parts.append(part[1:])
-                else:              parts.append('_esc(%s)' % part)
-            else: parts.append(repr(part) + '\n' * part.count('\n'))
+                    part = 'unicode(%s)' % part[1:] if self.debug else part[1:]
+                elif part[0] == '=':
+                    part = repr(eval(part[1:], self.state))
+                else: part = '_esc(%s)' % part
+            else: part = repr(part) + '\n' * part.count('\n')
+            parts.append(part)
         if '\n' in parts[-1]: parts[-1] = parts[-1][:-1] # remove last newline
         return '_printlist((%s, ))' % ' ,'.join(parts)
 
