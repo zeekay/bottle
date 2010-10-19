@@ -144,7 +144,7 @@ class HTTPError(HTTPResponse):
         self.traceback = traceback
 
     def __repr__(self):
-        return ''.join(ERROR_PAGE_TEMPLATE.render(e=self))
+        return template(ERROR_PAGE_TEMPLATE, e=self)
 
 
 
@@ -2068,7 +2068,7 @@ class StplTemplate(BaseTemplate):
             * In base-templates, ``body`` contains the text of the main
               template. Use ``{{body}}`` to print it.
             * Preprocessor statements: {{=  }} and <%= %>
-        Changes:
+        Changes that are not backwards compatible:
             * ``rebase`` and ``include`` are functions now.
             * Inline-statements that do not return unicode are limited to ASCII.
               They are not automatically encoded any more. Use unicode or encode
@@ -2084,22 +2084,21 @@ class StplTemplate(BaseTemplate):
                       helpful error messages.
     '''
     # Patterns for templates and inline statements (TODO: simplify?)
-    re_tpltokens = re.compile('(?:^|(?<=\n))[ \\t]*(?:<%((?:.|\\n)+?)%>[ \\t]*'\
-                                                     '|%(.*))(?:\n|$)')
-    re_inline = re.compile(r'\{\{(.*?)\}\}')
+    re_tpltokens = '(?:^|(?<=\n))[ \\t]*(?:<%((?:.|\\n)+?)%>[ \\t]*'\
+                   '|%(.*))(?:\n|$)'
+    re_inline = r'\{\{(.*?)\}\}'
     # Pattern to tokenize python code. We distinguish 5 types of code segments:
     # This monster pattern matches all kinds of quoted strings and comments.
-    _re_pytokens =  '([urbURB]?(?:\'\'(?!\')|""(?!")|\'\'\'\'\'\'|""""""' \
+    re_pytokens =  '([urbURB]?(?:\'\'(?!\')|""(?!")|\'\'\'\'\'\'|""""""' \
                      '|\'(?:[^\\\\\']|\\\\.)+?\'|"(?:[^\\\\"]|\\\\.)+?"' \
                      '|\'\'\'(?:[^\\\\]|\\\\.|\\n)+?\'\'\'' \
                      '|"""(?:[^\\\\]|\\\\.|\\n)+?""")|#.*)'
     # Match compound statement keywords that imply indentation changes.
-    _re_pytokens += '|^([ \\t]*(?:if|for|while|with|try|def|class)\\b)'
-    _re_pytokens += '|^([ \\t]*(?:elif|else|except|finally)\\b)'
+    re_pytokens += '|^([ \\t]*(?:if|for|while|with|try|def|class)\\b)'
+    re_pytokens += '|^([ \\t]*(?:elif|else|except|finally)\\b)'
     # Additionaly, we need to match the custom 'end' keyword.
-    _re_pytokens += '|((?:^|;)[ \\t]*end[ \\t]*(?=$|;|#))'
-    _re_pytokens += '|(\\n)' # Match a single newline
-    re_pytokens = re.compile(_re_pytokens, re.MULTILINE)
+    re_pytokens += '|((?:^|;)[ \\t]*end[ \\t]*(?=$|;|#))'
+    re_pytokens += '|(\\n)' # Match a single newline
 
     def prepare(self, escape=None, encoding='utf8', debug=False):
         self.cache = {} # Cache for subtemplates
@@ -2159,6 +2158,11 @@ class StplTemplate(BaseTemplate):
 
     def translate(self, code):
         ''' Convert template code into python code. '''
+        cls = self.__class__
+        if isinstance(self.re_pytokens, basestring): # lazy compile patterns
+            cls.re_pytokens = re.compile(cls.re_pytokens, re.MULTILINE)
+            cls.re_tpltokens = re.compile(cls.re_tpltokens)
+            cls.re_inline = re.compile(cls.re_inline)
         output = ''
         for i, data in enumerate(self.re_tpltokens.split(code)):
             if not data: continue
@@ -2286,7 +2290,7 @@ MEMFILE_MAX = 1024*100
 HTTP_CODES = httplib.responses
 HTTP_CODES[418] = "I'm a teapot" # RFC 2324
 
-ERROR_PAGE_TEMPLATE = SimpleTemplate("""
+ERROR_PAGE_TEMPLATE = """
 %try:
     %from bottle import DEBUG, HTTP_CODES, request
     %status_name = HTTP_CODES.get(e.status, 'Unknown').title()
@@ -2317,7 +2321,7 @@ ERROR_PAGE_TEMPLATE = SimpleTemplate("""
 %except ImportError:
     <b>ImportError:</b> Could not generate the error page. Please add bottle to sys.path
 %end
-""")
+"""
 """ The HTML template used for error messages """
 
 request = Request()
