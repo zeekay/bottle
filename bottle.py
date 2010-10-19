@@ -97,7 +97,10 @@ tonat.__doc__ = """ Convert anything to native strings """
 
 
 # Background compatibility
+deprset = set()
 def depr(message, critical=False):
+    if message in deprset and not critical: return
+    deprset.add(message)
     if critical: raise DeprecationWarning(message)
     warnings.warn(message, DeprecationWarning, stacklevel=3)
 
