@@ -2171,8 +2171,7 @@ class StplTemplate(BaseTemplate):
             if not data: continue
             if data[0] == '=':
                 code = self.fix_indentation(data.replace('=', '', 1))
-                co = compile(code, '<tpl precompiler>', 'exec')
-                eval(co, self.state)
+                eval(compile(code, '<tpl preprocessor>', 'exec'), self.state)
                 data = '\n' * data.count('\n')
             if not i%3: data = self.codify(data)
             output += data + '\n'
