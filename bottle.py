@@ -2068,7 +2068,7 @@ class StplTemplate(BaseTemplate):
             * The namespace of a calling template is available to the called
               sub-template. Explicitly passing variables to `rebase()` or
               `include()` is no longer necessary, but still possible.
-            * In base-templates, ``body`` contains the text of the main
+            * In base-templates, ``body`` contains the text of the calling main
               template. Use ``{{body}}`` to print it.
             * Preprocessor statements: {{=  }} and <%= %>
         Changes that are not backwards compatible:
@@ -2183,22 +2183,22 @@ class StplTemplate(BaseTemplate):
         parts = []
         for i, part in enumerate(self.re_inline.split(text)):
             if not part: continue
-            if i % 2:
+            if i % 2: # Every odd entry is an inline statement
                 part = part.strip()
-                if part[0] == '!':
-                    part = 'unicode(%s)' % part[1:] if self.debug else part[1:]
-                elif part[0] == '=':
-                    part = repr(eval(part[1:], self.state))
+                if not part: continue
+                if part[0] == '!': part = part[1:]
+                elif part[0] == '=': part = repr(eval(part[1:], self.state))
                 else: part = '_esc(%s)' % part
-            else: part = repr(part) + '\n' * part.count('\n')
+                if self.debug: part = 'unicode(%s)' % part
+            elif part: part = repr(part) + '\n' * part.count('\n')
             parts.append(part)
-        if '\n' in parts[-1]: parts[-1] = parts[-1][:-1] # remove last newline
+        if parts and parts[-1][-1:] == '\n': parts[-1] = parts[-1][:-1]
         return '_printlist((%s, ))' % ' ,'.join(parts)
 
     def fix_indentation(self, code):
         ''' Convert a custom python dialect into real python code.
             The dialect uses an 'end' keyword to close compound statements
-            (e.g. if-elif-else-end) instead of code indentation. '''
+            (e.g. if-elif-else-end) and in return ignores code indentation. '''
         lastmatch, lineno, indent, indentmod, esc = 0, 1, 0, 0, False
         cline, output = '', '' # Buffer for current line and code output.
         for i, data in enumerate(self.re_pytokens.split(code.rstrip() + '\n')):
