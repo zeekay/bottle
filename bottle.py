@@ -2177,7 +2177,7 @@ class StplTemplate(BaseTemplate):
             output += data + '\n'
         return self.fix_indentation(output)
 
-    def codify(self, text):
+    def codify(self, text, printlist='_printlist(%s)' ):
         ''' Convert text with in-line statements into print calls. '''
         if text.endswith('\\\\\n'): text = text[:-3]
         parts = []
@@ -2192,7 +2192,7 @@ class StplTemplate(BaseTemplate):
                 if self.debug: part = 'unicode(%s)' % part
             elif part: part = '\\\n'.join(map(repr, part.splitlines(True)))
             parts.append(part)
-        return '_printlist((%s, ))' % ' ,'.join(parts)
+        return printlist % '(%s,)' % ','.join(parts)
 
     def fix_indentation(self, code):
         ''' Convert a custom python dialect into real python code.
@@ -2215,6 +2215,7 @@ class StplTemplate(BaseTemplate):
                 output += '  '*(indent+indentmod) + cline.strip() + '\n'
                 cline, indentmod, esc = '', 0, cline.rstrip().endswith('\\')
                 lineno += 1
+        if indent > 0: raise StplSyntaxError('Some blocks were not closed properly,')
         return output
 
 
