@@ -2169,7 +2169,7 @@ class StplTemplate(BaseTemplate):
         output = ''
         for i, data in enumerate(self.re_tpltokens.split(code)):
             if not data: continue
-            if data[0] == '=':
+            if i%3 and data[0] == '=': # mode = 'code' if i%3 else 'text'
                 code = self.fix_indentation(data.replace('=', '', 1))
                 eval(compile(code, '<tpl preprocessor>', 'exec'), self.state)
                 data = '\n' * data.count('\n')
