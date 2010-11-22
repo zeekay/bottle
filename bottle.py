@@ -2190,9 +2190,8 @@ class StplTemplate(BaseTemplate):
                 elif part[0] == '=': part = repr(eval(part[1:], self.state))
                 else: part = '_esc(%s)' % part
                 if self.debug: part = 'unicode(%s)' % part
-            elif part: part = repr(part) + '\n' * part.count('\n')
+            elif part: part = '\\\n'.join(map(repr, part.splitlines(True)))
             parts.append(part)
-        if parts and parts[-1][-1:] == '\n': parts[-1] = parts[-1][:-1]
         return '_printlist((%s, ))' % ' ,'.join(parts)
 
     def fix_indentation(self, code):
