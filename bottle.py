@@ -2092,7 +2092,7 @@ class StplTemplate(BaseTemplate):
     re_inline = r'\{\{(.*?)\}\}'
     # Pattern to tokenize python code. We distinguish 5 types of code segments:
     # This monster pattern matches all kinds of quoted strings and comments.
-    re_pytokens =  '([urbURB]?(?:\'\'(?!\')|""(?!")|\'\'\'\'\'\'|""""""' \
+    re_pytokens =  '((?m)[urbURB]?(?:\'\'(?!\')|""(?!")|\'\'\'\'\'\'|""""""' \
                      '|\'(?:[^\\\\\']|\\\\.)+?\'|"(?:[^\\\\"]|\\\\.)+?"' \
                      '|\'\'\'(?:[^\\\\]|\\\\.|\\n)+?\'\'\'' \
                      '|"""(?:[^\\\\]|\\\\.|\\n)+?""")|#.*)'
@@ -2104,6 +2104,11 @@ class StplTemplate(BaseTemplate):
     re_pytokens += '|(\\n)' # Match a single newline
 
     def prepare(self, escape=None, encoding='utf8', debug=False):
+        cls = self.__class__
+        if isinstance(cls.re_pytokens, basestring): # lazy compile patterns
+            cls.re_pytokens = re.compile(cls.re_pytokens)
+            cls.re_tpltokens = re.compile(cls.re_tpltokens)
+            cls.re_inline = re.compile(cls.re_inline)
         self.cache = {} # Cache for subtemplates
         if not escape:
             def escape(x): return cgi.escape(unicode(x))
@@ -2161,14 +2166,9 @@ class StplTemplate(BaseTemplate):
 
     def translate(self, code):
         ''' Convert template code into python code. '''
-        cls = self.__class__
-        if isinstance(self.re_pytokens, basestring): # lazy compile patterns
-            cls.re_pytokens = re.compile(cls.re_pytokens, re.MULTILINE)
-            cls.re_tpltokens = re.compile(cls.re_tpltokens)
-            cls.re_inline = re.compile(cls.re_inline)
         output = ''
         for i, data in enumerate(self.re_tpltokens.split(code)):
-            if not data: continue
+            if not data: continue # Happens on ...%><%...
             if i%3 and data[0] == '=': # mode = 'code' if i%3 else 'text'
                 code = self.fix_indentation(data.replace('=', '', 1))
                 eval(compile(code, '<tpl preprocessor>', 'exec'), self.state)
@@ -2179,18 +2179,19 @@ class StplTemplate(BaseTemplate):
 
     def codify(self, text, printlist='_printlist(%s)' ):
         ''' Convert text with in-line statements into print calls. '''
-        if text.endswith('\\\\\n'): text = text[:-3]
+        if text.endswith('\\\\\n'): text = text[:-3] # Strip unwanted newline
         parts = []
         for i, part in enumerate(self.re_inline.split(text)):
             if not part: continue
-            if i % 2: # Every odd entry is an inline statement
+            if i % 2: # Every odd entry is an {{inline}} statement
                 part = part.strip()
                 if not part: continue
                 if part[0] == '!': part = part[1:]
                 elif part[0] == '=': part = repr(eval(part[1:], self.state))
                 else: part = '_esc(%s)' % part
                 if self.debug: part = 'unicode(%s)' % part
-            elif part: part = '\\\n'.join(map(repr, part.splitlines(True)))
+            else:
+                part = '\\\n'.join(map(repr, part.splitlines(True)))
             parts.append(part)
         return printlist % '(%s,)' % ','.join(parts)
 
@@ -2204,9 +2205,9 @@ class StplTemplate(BaseTemplate):
             i %= 6 # => 0:OTHER, 1:STRING, 2:BLOCK, 3:DBLOCK, 4:END, 5:NEWLINE
             if not data: continue
             if not esc:
-              if   i==2: indent += 1; indentmod -= 1; # if:
-              elif i==3:              indentmod -= 1; # else:
-              elif i==4: indent -= 1; indentmod += 1; # end
+                if   i==2: indent += 1; indentmod -= 1; # if:
+                elif i==3:              indentmod -= 1; # else:
+                elif i==4: indent -= 1; indentmod += 1; # end
             if i<=3: cline += data # All but NEWLINE and END
             if i==5: # NEWLINE
                 if indent < 0 or indent+indentmod < 0:
@@ -2217,6 +2218,7 @@ class StplTemplate(BaseTemplate):
                 lineno += 1
         if indent > 0: raise StplSyntaxError('Some blocks were not closed properly,')
         return output
+
 
 
 
