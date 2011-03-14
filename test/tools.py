@@ -28,15 +28,28 @@ def tobs(data):
     ''' Transforms bytes or unicode into a byte stream. '''
     return BytesIO(tob(data)) if BytesIO else StringIO(tob(data))
 
-class ServerTestBase(unittest.TestCase):
+class ContextTestBase(unittest.TestCase):
+    def setUp(self):
+        self.environ = {}
+        self.app = bottle.app.push()
+        self.context = bottle.Context().push()
+        wsgiref.util.setup_testing_defaults(self.environ)
+        bottle.request.bind(self.environ)
+        bottle.response.bind()
+    
+    def tearDown(self):
+        bottle.context.pop()
+        bottle.app.pop()
+
+class ServerTestBase(ContextTestBase):
     def setUp(self):
         ''' Create a new Bottle app set it as default_app and register it to urllib2 '''
+        ContextTestBase.setUp(self)
         self.port = 8080
         self.host = 'localhost'
-        self.app = bottle.app.push()
         self.wsgiapp = wsgiref.validate.validator(self.app)
 
-    def urlopen(self, path, method='GET', post='', env=None):
+    def urlopen(self, path, method='GET', post='', **_env):
         result = {'code':0, 'status':'error', 'header':{}, 'body':tob('')}
         def start_response(status, header):
             result['code'] = int(status.split()[0])
@@ -47,16 +60,18 @@ class ServerTestBase(unittest.TestCase):
                     result['header'][name] += ', ' + value
                 else:
                     result['header'][name] = value
-        env = env if env else {}
-        wsgiref.util.setup_testing_defaults(env)
+        env = self.environ.copy()
         env['REQUEST_METHOD'] = method.upper().strip()
         env['PATH_INFO'] = path
         env['QUERY_STRING'] = ''
+        env['wsgi.input'].truncate(0)
         if post:
             env['REQUEST_METHOD'] = 'POST'
             env['CONTENT_LENGTH'] = str(len(tob(post)))
+            env['wsgi.input'].truncate(0)
             env['wsgi.input'].write(tob(post))
             env['wsgi.input'].seek(0)
+        env.update(**_env)
         response = self.wsgiapp(env, start_response)
         for part in response:
             try:
@@ -71,9 +86,6 @@ class ServerTestBase(unittest.TestCase):
     def postmultipart(self, path, fields, files):
         env = multipart_environ(fields, files)
         return self.urlopen(path, method='POST', env=env)
-
-    def tearDown(self):
-        bottle.app.pop()
 
     def assertStatus(self, code, route='/', **kargs):
         self.assertEqual(code, self.urlopen(route, **kargs)['code'])

@@ -158,8 +158,6 @@ class lazy_attribute(object): # Does not need configuration -> lower-case name
 
 class BottleException(Exception):
     """ A base class for exceptions used by bottle. """
-    pass
-
 
 class HTTPResponse(BottleException):
     """ Used to break execution and immediately finish the response """
@@ -374,6 +372,114 @@ class Router(object):
             elif i%3 == 1: out += '(?P<%s>' % part if part else '(?:'
             else:          out += '%s)' % (part or '[^/]+')
         return re.compile('^%s$'%out)
+
+
+
+
+
+
+###############################################################################
+# Context Locals ###############################################################
+###############################################################################
+
+#: A thread-save namepsace.
+local = threading.local()
+local._context = None
+# To support greenlets, replace the 'local' instance with a greenlet-aware
+# namespace or monkey-patch threading.local.
+
+class NoContextError(BottleException):
+    """ Missing or invalid global context. """
+
+class Context(dict):
+    ''' A context stores data related to a specific request/response cycle.
+        On the surface, it is just a dictionary that also allows attribute
+        access. Nothing special. With one exception:
+        
+        When used in a ``with`` statement, the context pushes itself to a
+        global stack. Bottle does that automatically on each request and
+        populates the context with request related data. This allows global
+        objects (mainly :data:`request`) to access the `current` request and
+        avoids the need to explicitly pass around a request object all the
+        time.
+        
+        The context stack is thread-local, meaning that there is a separate
+        stack for each thread. This is to avoid conflicts in multi-threaded
+        environments where more than one context may exists at the same time.
+        
+        The "stack" aspect of this approach is only used when applications
+        call sub-applications. In most other cases, the stack only contains a
+        single item.
+    '''
+
+    def __enter__(self):
+        try:
+            self['_parent'], local._context = local._context, self
+        except AttributeError:
+            self['_parent'], local._context = None, self
+        return self
+
+    def __exit__(self, etype, eval, etb):
+        if not local._context is self:
+            raise RuntimeError("Inconsistent context stack. Pop head first.")
+        local._context = self['_parent']
+    
+    def __getattr__(self, name): return self.get(name)
+    def __setattr__(self, name, value): self[name] = value
+    def push(self): return self.__enter__()
+    def pop(self): self.__exit__(None, None, None)
+    def clone(self): return self.__class__(self)
+
+
+def get_context():
+    if local._context is None:
+        raise RuntimeError('Call from outside of request context.')
+    return local._context
+
+
+class ContextProxy(object):
+    ''' A proxy that relays all attribute and item accesses to the current
+        :class:`Context`. In other words: Instances of this class always point
+        to the top of the context stack. '''
+    def __getattr__(self, name): return getattr(local._context, name)
+    def __setattr__(self, name, value): setattr(local._context, name, value)
+    def __getitem__(self, name): return local._context[name]
+    def __setitem__(self, name, value): local._context[name] = value
+    def __contains__(self, value): return value in local._context
+
+#: A context-local namespace (see :class:`ContextProxy` and :class:`Context`).
+context = ContextProxy()
+
+
+
+
+
+def context_property(name, doc='Context-local property.', writeable=True):
+    ''' Create a context-local property. Such properties won't work outside of
+        a valid request context. '''
+
+    errmsg = "Access to context-local property failed: No context available."
+
+    def fget(obj):
+        try:
+            return local._context[name]
+        except KeyError:
+            raise AttributeError("Attribute not found: "+name)
+        except TypeError: raise NoContextError(errmsg)
+
+    def fset(obj, value):
+        try:
+            local._context[name] = value
+        except TypeError: raise NoContextError(errmsg)
+
+    def fdel(obj):
+        try:
+            del local._context[name]
+        except TypeError: raise NoContextError(errmsg)
+
+    if writeable:
+        return property(fget, fset, fdel, doc)
+    return property(fget, None, None, doc)
 
 
 
@@ -695,7 +801,8 @@ class Bottle(object):
         if isinstance(first, bytes):
             return itertools.chain([first], out)
         if isinstance(first, unicode):
-            return itertools.imap(lambda x: x.encode(response.charset),
+            charset = response.charset
+            return itertools.imap(lambda x: x.encode(charset),
                                   itertools.chain([first], out))
         return self._cast(HTTPError(500, 'Unsupported response type: %s'\
                                          % type(first)), request, response)
@@ -703,17 +810,17 @@ class Bottle(object):
     def wsgi(self, environ, start_response):
         """ The bottle WSGI-interface. """
         try:
-            environ['bottle.app'] = self
-            request.bind(environ)
-            response.bind()
-            out = self.handle(environ)
-            out = self._cast(out, request, response)
-            # rfc2616 section 4.3
-            if response.status in (100, 101, 204, 304) or request.method == 'HEAD':
-                if hasattr(out, 'close'): out.close()
-                out = []
-            status = '%d %s' % (response.status, HTTP_CODES[response.status])
-            start_response(status, response.headerlist)
+            with Context(app=self):
+                request.bind(environ)
+                response.bind()
+                out = self.handle(environ)
+                out = self._cast(out, request, response)
+                # rfc2616 section 4.3
+                if response.status in (100, 101, 204, 304) or request.method == 'HEAD':
+                    if hasattr(out, 'close'): out.close()
+                    out = []
+                status = '%d %s' % (response.status, HTTP_CODES[response.status])
+                start_response(status, response.headerlist)
             return out
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
@@ -741,28 +848,26 @@ class Bottle(object):
 ###############################################################################
 
 
-class Request(threading.local, DictMixin):
-    """ Represents a single HTTP request using thread-local attributes.
-        The Request object wraps a WSGI environment and can be used as such.
+class Request(DictMixin):
+    """ A Request object wraps a WSGI environment and represents a single HTTP
+        request. In Bottle applications, you usually don't use this but the
+        global :data:`request` object.
+        
+        Some of the computed properties (e.g. forms) are cached and stored in
+        the environ dictionary.
     """
-    def __init__(self, environ=None):
-        """ Create a new Request instance.
 
-            You usually don't do this but use the global `bottle.request`
-            instance instead.
-        """
-        self.bind(environ or {},)
-
-    def bind(self, environ):
-        """ Bind a new WSGI environment.
-
-            This is done automatically for the global `bottle.request`
-            instance on every request.
-        """
+    def __init__(self, environ):
+        """ Create a new stand-alone Request instance. """
         self.environ = environ
-        # These attributes are used anyway, so it is ok to compute them here
-        self.path = '/' + environ.get('PATH_INFO', '/').lstrip('/')
-        self.method = environ.get('REQUEST_METHOD', 'GET').upper()
+
+    @property
+    def path(self):
+        return '/' + self.environ.get('PATH_INFO', '/').lstrip('/')
+
+    @property
+    def method(self):
+        return self.environ.get('REQUEST_METHOD', 'GET').upper()
 
     @property
     def _environ(self):
@@ -780,8 +885,7 @@ class Request(threading.local, DictMixin):
                          to change the shift direction. (default: 1)
         '''
         script_name = self.environ.get('SCRIPT_NAME','/')
-        self['SCRIPT_NAME'], self.path = path_shift(script_name, self.path, shift)
-        self['PATH_INFO'] = self.path
+        self['SCRIPT_NAME'], self['PATH_INFO'] = path_shift(script_name, self.path, shift)
 
     def __getitem__(self, key): return self.environ[key]
     def __delitem__(self, key): self[key] = ""; del(self.environ[key])
@@ -792,9 +896,7 @@ class Request(threading.local, DictMixin):
         """ Shortcut for Request.environ.__setitem__ """
         self.environ[key] = value
         todelete = []
-        if key in ('PATH_INFO','REQUEST_METHOD'):
-            self.bind(self.environ)
-        elif key == 'wsgi.input': todelete = ('body','forms','files','params')
+        if key == 'wsgi.input': todelete = ('body','forms','files','params')
         elif key == 'QUERY_STRING': todelete = ('get','params')
         elif key.startswith('HTTP_'): todelete = ('headers', 'cookies')
         for key in todelete:
@@ -977,32 +1079,22 @@ class Request(threading.local, DictMixin):
         return self.header.get('X-Requested-With') == 'XMLHttpRequest'
 
 
-class Response(threading.local):
-    """ Represents a single HTTP response using thread-local attributes.
-    """
 
-    def __init__(self):
-        self.bind()
 
-    def bind(self):
-        """ Resets the Response object to its factory defaults. """
-        self._COOKIES = None
-        self.status = 200
-        self.headers = HeaderDict()
-        self.content_type = 'text/html; charset=UTF-8'
+class Response(object):
+    """ Represents a single HTTP response. """
+
+    def __init__(self, body='', status=200, headers=None, content_type=None):
+        self.body = body
+        self.status = status
+        self.headers = HeaderDict(headers or [])
+        self.content_type = content_type or 'text/html; charset=UTF-8'
+        self._COOKIES = SimpleCookie()
 
     @property
     def header(self):
-        depr("Response.header renamed to Response.headers")
+        depr("Response.header renamed to Response.headers") # 0.9
         return self.headers
-
-    def copy(self):
-        ''' Returns a copy of self. '''
-        copy = Response()
-        copy.status = self.status
-        copy.headers = self.headers.copy()
-        copy.content_type = self.content_type
-        return copy
 
     def wsgiheader(self):
         ''' Returns a wsgi conform list of header/value pairs. '''
@@ -1034,8 +1126,6 @@ class Response(threading.local):
     @property
     def COOKIES(self):
         """ A dict-like SimpleCookie instance. Use :meth:`set_cookie` instead. """
-        if not self._COOKIES:
-            self._COOKIES = SimpleCookie()
         return self._COOKIES
 
     def set_cookie(self, key, value, secret=None, **kargs):
@@ -1089,6 +1179,35 @@ class Response(threading.local):
     content_type = property(get_content_type, set_content_type, None,
                             get_content_type.__doc__)
 
+
+
+class LocalRequest(Request):
+    ''' A thread-local version of :class:`Request` that uses the global
+        :class:`Context` stack to store the environ dictionary. '''
+    def __init__(self): pass
+    bind = Request.__init__
+    environ = context_property('environ', "WSGI Environment")
+    
+    def copy(self):
+        ''' Return a stand-alone copy that does not depend on the global
+            request context. '''
+        return Request(self.environ)
+
+
+class LocalResponse(Response):
+    def __init__(self): pass
+    bind = Response.__init__
+    body = context_property('response_body')
+    status = context_property('response_status')
+    headers = context_property('response_headers')
+    _COOKIES = context_property('response_cookies')
+
+    def copy(self):
+        ''' Return a stand-alone copy that does not depend on the global
+            request context. '''
+        rs = Response(self.body, self.status, self.headers)
+        rs._COOKIES = self._COOKIES
+        return rv
 
 
 
@@ -2405,16 +2524,14 @@ ERROR_PAGE_TEMPLATE = """
 %end
 """
 
-#: A thread-save instance of :class:`Request` representing the `current` request.
-request = Request()
-
-#: A thread-save instance of :class:`Response` used to build the HTTP response.
-response = Response()
-
-#: A thread-save namepsace. Not used by Bottle.
-local = threading.local()
 
 # Initialize app stack (create first empty Bottle app)
 # BC: 0.6.4 and needed for run()
 app = default_app = AppStack()
 app.push()
+
+#: A thread-save instance of :class:`Request` representing the `current` request.
+request = LocalRequest()
+#: A thread-save instance of :class:`Response` used to build the HTTP response.
+response = LocalResponse()
+

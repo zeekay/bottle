@@ -3,7 +3,7 @@
 
 import unittest
 import bottle
-from tools import ServerTestBase, tob, tobs
+from tools import ServerTestBase, ContextTestBase, tob, tobs
 
 class TestOutputFilter(ServerTestBase):
     ''' Tests for WSGI functionality, routing and output casting (decorators) '''

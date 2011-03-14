@@ -5,6 +5,7 @@ import os
 import os.path
 import tempfile
 import time
+from tools import ContextTestBase
 
 class TestDateParser(unittest.TestCase):
     def test_rfc1123(self):
@@ -30,13 +31,7 @@ class TestDateParser(unittest.TestCase):
         self.assertEqual(None, parse_date('Bad 123'))
 
 
-class TestSendFile(unittest.TestCase):
-    def setUp(self):
-        e = dict()
-        wsgiref.util.setup_testing_defaults(e)
-        b = Bottle()
-        request.bind(e)
-        response.bind()
+class TestSendFile(ContextTestBase):
 
     def test_valid(self):
         """ SendFile: Valid requests"""
@@ -67,12 +62,12 @@ class TestSendFile(unittest.TestCase):
 
     def test_ims(self):
         """ SendFile: If-Modified-Since"""
-        request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
+        self.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
         res = static_file(os.path.basename(__file__), root='./')
         self.assertEqual(304, res.status)
         self.assertEqual(int(os.stat(__file__).st_mtime), parse_date(res.headers['Last-Modified']))
         self.assertAlmostEqual(int(time.time()), parse_date(res.headers['Date']))
-        request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
+        self.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
         self.assertEqual(open(__file__,'rb').read(), static_file(os.path.basename(__file__), root='./').output.read())
 
     def test_download(self):
@@ -80,7 +75,7 @@ class TestSendFile(unittest.TestCase):
         basename = os.path.basename(__file__)
         f = static_file(basename, root='./', download=True)
         self.assertEqual('attachment; filename="%s"' % basename, f.headers['Content-Disposition'])
-        request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
+        self.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
         f = static_file(os.path.basename(__file__), root='./')
         self.assertEqual(open(__file__,'rb').read(), f.output.read())
 

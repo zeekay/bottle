@@ -1,6 +1,6 @@
 import unittest
 import bottle
-from tools import tob
+from tools import tob, ContextTestBase
 
 class TestSecureCookies(unittest.TestCase):
     def setUp(self):
@@ -19,15 +19,9 @@ class TestSecureCookies(unittest.TestCase):
         self.assertTrue(bottle.cookie_is_encoded(cookie))
         self.assertFalse(bottle.cookie_is_encoded(tob('some string')))
 
-class TestSecureCookiesInBottle(unittest.TestCase):
-    def setUp(self):
-        self.data = dict(a=5, b=u'unicode', c=[1,2,3,4,tob('bytestring')])
-        self.secret = tob('secret')
-        bottle.app.push()
-        bottle.response.bind()
-
-    def tear_down(self):
-        bottle.app.pop()
+class TestSecureCookiesInBottle(ContextTestBase):
+    data = dict(a=5, b=u'unicode', c=[1,2,3,4,tob('bytestring')])
+    secret = tob('secret')
 
     def get_pairs(self):
         for k, v in bottle.response.wsgiheader():

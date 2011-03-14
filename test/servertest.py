@@ -14,12 +14,13 @@ if 'coverage' in sys.argv:
 
 @route()
 def test():
-    return "OK"
+    return sys.argv[1]
 
 if __name__ == '__main__':
     server = sys.argv[1]
     port   = int(sys.argv[2])
     try:
+        bottle.debug(True)
         run(port=port, server=server, quiet=True)
     except ImportError:
         print "Warning: Could not test %s. Import error." % server

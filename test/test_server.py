@@ -66,7 +66,7 @@ class TestServer(unittest.TestCase):
     def test_test(self):
         ''' Test a simple static page with this server adapter. '''
         if self.p.poll() == None:
-            self.assertEqual(tob('OK'), self.fetch('test'))
+            self.assertEqual(tob(self.server), self.fetch('test'))
         #else:
         #    self.assertTrue(False, "Server process down")
 

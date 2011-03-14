@@ -313,14 +313,14 @@ class TestDecorators(ServerTestBase):
         """ WSGI: Test route builder """
         def foo(): pass
         bottle.route('/a/:b/c', name='named')(foo)
-        bottle.request.environ['SCRIPT_NAME'] = ''
+        self.environ['SCRIPT_NAME'] = ''
         self.assertEqual('/a/xxx/c', bottle.url('named', b='xxx'))
         self.assertEqual('/a/xxx/c', bottle.app().get_url('named', b='xxx'))
-        bottle.request.environ['SCRIPT_NAME'] = '/app'
+        self.environ['SCRIPT_NAME'] = '/app'
         self.assertEqual('/app/a/xxx/c', bottle.url('named', b='xxx'))
-        bottle.request.environ['SCRIPT_NAME'] = '/app/'
+        self.environ['SCRIPT_NAME'] = '/app/'
         self.assertEqual('/app/a/xxx/c', bottle.url('named', b='xxx'))
-        bottle.request.environ['SCRIPT_NAME'] = 'app/'
+        self.environ['SCRIPT_NAME'] = 'app/'
         self.assertEqual('/app/a/xxx/c', bottle.url('named', b='xxx'))
 
     def test_autoroute(self):
