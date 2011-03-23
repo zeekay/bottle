@@ -382,14 +382,16 @@ class Router(object):
 # Context Locals ###############################################################
 ###############################################################################
 
-#: A thread-save namepsace.
-local = threading.local()
-local._context = None
-# To support greenlets, replace the 'local' instance with a greenlet-aware
-# namespace or monkey-patch threading.local.
 
-class NoContextError(BottleException):
+#: A thread-local namepsace.
+#: To support greenlets, replace the 'local' instance with a greenlet-aware
+#: alternative or monkey-patch threading.local.
+local = threading.local()
+
+
+class ContextError(BottleException):
     """ Missing or invalid global context. """
+
 
 class Context(dict):
     ''' A context stores data related to a specific request/response cycle.
@@ -414,68 +416,73 @@ class Context(dict):
 
     def __enter__(self):
         try:
-            self['_parent'], local._context = local._context, self
+            self['_parent'] = local._context
         except AttributeError:
-            self['_parent'], local._context = None, self
+            self['_parent'] = None
+        local._context = self
         return self
 
     def __exit__(self, etype, eval, etb):
-        if not local._context is self:
-            raise RuntimeError("Inconsistent context stack. Pop head first.")
         local._context = self['_parent']
-    
-    def __getattr__(self, name): return self.get(name)
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            return AttributeError('Attribute not found: %s' % name)
+
     def __setattr__(self, name, value): self[name] = value
     def push(self): return self.__enter__()
-    def pop(self): self.__exit__(None, None, None)
-    def clone(self): return self.__class__(self)
+    def pop(self):
+        if not local._context is self:
+            raise ContextError("Inconsistent context stack. Pop head first.")
+        self.__exit__(None, None, None)
 
 
 def get_context():
-    if local._context is None:
-        raise RuntimeError('Call from outside of request context.')
-    return local._context
+    ''' Return the current context or raise :exc:`ContextError`. '''
+    try:
+        current = local._context
+    except AttributeError:
+        current = None
+    if current is None:
+        raise ContextError("Cannot access context outside of request cycle.")
+    return current
 
 
 class ContextProxy(object):
     ''' A proxy that relays all attribute and item accesses to the current
         :class:`Context`. In other words: Instances of this class always point
         to the top of the context stack. '''
-    def __getattr__(self, name): return getattr(local._context, name)
-    def __setattr__(self, name, value): setattr(local._context, name, value)
-    def __getitem__(self, name): return local._context[name]
-    def __setitem__(self, name, value): local._context[name] = value
-    def __contains__(self, value): return value in local._context
+    def __getattr__(self, name): return getattr(get_context(), name)
+    def __setattr__(self, name, value): setattr(get_context(), name, value)
+    def __getitem__(self, name): return get_context()[name]
+    def __setitem__(self, name, value): get_context()[name] = value
+    def __contains__(self, value): return value in get_context()
+
 
 #: A context-local namespace (see :class:`ContextProxy` and :class:`Context`).
+#: It behaves similar to :data:`local`, but is in addition local to the
+#: handling application. Useful for plugins to avoid conflicts with mounted
+#: sub-applications.
 context = ContextProxy()
-
-
-
 
 
 def context_property(name, doc='Context-local property.', writeable=True):
     ''' Create a context-local property. Such properties won't work outside of
         a valid request context. '''
 
-    errmsg = "Access to context-local property failed: No context available."
-
     def fget(obj):
         try:
-            return local._context[name]
+            return get_context()[name]
         except KeyError:
-            raise AttributeError("Attribute not found: "+name)
-        except TypeError: raise NoContextError(errmsg)
+            raise AttributeError("Data not found in global context: "+name)
 
     def fset(obj, value):
-        try:
-            local._context[name] = value
-        except TypeError: raise NoContextError(errmsg)
+        get_context()[name] = value
 
     def fdel(obj):
-        try:
-            del local._context[name]
-        except TypeError: raise NoContextError(errmsg)
+        del get_context()[name]
 
     if writeable:
         return property(fget, fset, fdel, doc)
