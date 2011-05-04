@@ -64,6 +64,8 @@ class TestSendFile(unittest.TestCase):
         self.assertEqual('some/type', f.headers['Content-Type'])
         f = static_file(os.path.basename(__file__), root='./', guessmime=False)
         self.assertEqual('text/plain', f.headers['Content-Type'])
+        f = static_file(os.path.basename(__file__), root='./', mimetype=False)
+        self.assertEqual(f.headers.get('Content-Type'), None)
 
     def test_ims(self):
         """ SendFile: If-Modified-Since"""
@@ -75,6 +77,22 @@ class TestSendFile(unittest.TestCase):
         request.environ['HTTP_IF_MODIFIED_SINCE'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(100))
         self.assertEqual(open(__file__,'rb').read(), static_file(os.path.basename(__file__), root='./').output.read())
 
+    def test_etags(self):
+        """ SendFile: If-Modified-Since"""
+        res = static_file(os.path.basename(__file__), root='./')
+        self.assertEqual(200, res.status)
+        self.assertTrue(res.headers.get('Etag'))
+        etag = res.headers.get('Etag')
+        request.environ['HTTP_IF_NONE_MATCH'] = etag
+        res = static_file(os.path.basename(__file__), root='./')
+        self.assertEqual(304, res.status)
+        request.environ['HTTP_IF_NONE_MATCH'] = '"Fake etag"'
+        res = static_file(os.path.basename(__file__), root='./')
+        self.assertEqual(200, res.status)
+        request.environ['HTTP_IF_NONE_MATCH'] = '"Multi", "etags", %s' % etag
+        res = static_file(os.path.basename(__file__), root='./')
+        self.assertEqual(304, res.status)
+        
     def test_download(self):
         """ SendFile: Download as attachment """
         basename = os.path.basename(__file__)

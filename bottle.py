@@ -42,6 +42,7 @@ from tempfile import TemporaryFile
 from traceback import format_exc
 from urllib import urlencode, quote as urlquote, unquote as urlunquote
 from urlparse import urlunsplit, urljoin, SplitResult as UrlSplitResult
+from zlib import adler32
 
 try: from collections import MutableMapping as DictMixin
 except ImportError: # pragma: no cover
@@ -1437,11 +1438,19 @@ def send_file(*a, **k): #BC 0.6.4
     raise static_file(*a, **k)
 
 
-def static_file(filename, root, mimetype='auto', guessmime=True, download=False):
+def static_file(filename, root, download=False, inline=False, etag=None, 
+                mimetype=None, guessmime=True):
     """ Open a file in a safe way and return :exc:`HTTPResponse` with status
-        code 200, 305, 401 or 404. Set Content-Type, Content-Encoding,
-        Content-Length and Last-Modified header. Obey If-Modified-Since header
-        and HEAD requests.
+        code 200, 305, 401 or 404. Set `Content-Type`, `Content-Encoding`,
+        `Content-Length`, `Last-Modified` and `ETag` headers. Return
+        `304 Not Modified` if a mathing `If-Modified-Since` or `If-None-Match`
+        header is found. Omit body on `HEAD` requests.
+        
+        :param filename: Path to the file relative to `root`.
+        :param root: Directory that contains the static files. 
+        :param mimetype: If not set, guess mimetype from file extention.
+        :param download: If true, tell the browser to open a save-file dialog.
+        :param etag: If set, use this Etag instead of the calculated one.
     """
     root = os.path.abspath(root) + os.sep
     filename = os.path.abspath(os.path.join(root, filename.strip('/\\')))
@@ -1455,9 +1464,9 @@ def static_file(filename, root, mimetype='auto', guessmime=True, download=False)
         return HTTPError(403, "You do not have permission to access this file.")
 
     if not guessmime: #0.9
-       if mimetype == 'auto': mimetype = 'text/plain'
-       depr("To disable mime-type guessing, specify a type explicitly.")
-    if mimetype == 'auto':
+       if mimetype is None: mimetype = 'text/plain'
+       depr("To disable mime-type guessing, specify a type or pass False.")
+    if mimetype is None:
         mimetype, encoding = mimetypes.guess_type(filename)
         if mimetype: header['Content-Type'] = mimetype
         if encoding: header['Content-Encoding'] = encoding
@@ -1467,17 +1476,28 @@ def static_file(filename, root, mimetype='auto', guessmime=True, download=False)
     if download:
         download = os.path.basename(filename if download == True else download)
         header['Content-Disposition'] = 'attachment; filename="%s"' % download
+    elif inline:
+        inline = os.path.basename(filename if inline == True else inline)
+        header['Content-Disposition'] = 'inline; filename="%s"' % inline
 
     stats = os.stat(filename)
     header['Content-Length'] = stats.st_size
     lm = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(stats.st_mtime))
     header['Last-Modified'] = lm
+    header['Date'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
+
+    if etag is None:
+        etag = 'bottle-%d-%d-%d' % (stats.st_size, stats.st_mtime, stats.st_ino)
+    if etag:
+        etag = '"%s"' % etag.replace('"','_')
+        header['Etag'] = etag
+        if etag in request.environ.get('HTTP_IF_NONE_MATCH', ''):
+            return HTTPResponse(status=304, header=header)
 
     ims = request.environ.get('HTTP_IF_MODIFIED_SINCE')
     if ims:
         ims = parse_date(ims.split(";")[0].strip())
     if ims is not None and ims >= int(stats.st_mtime):
-        header['Date'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
         return HTTPResponse(status=304, header=header)
 
     body = '' if request.method == 'HEAD' else open(filename, 'rb')
