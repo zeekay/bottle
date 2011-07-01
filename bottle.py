@@ -2695,3 +2695,17 @@ app.push()
 #: A virtual package that redirects import statements.
 #: Example: ``import bottle.ext.sqlite`` actually imports `bottle_sqlite`.
 ext = _ImportRedirect(__name__+'.ext', 'bottle_%s').module
+
+if __name__ == '__main__':
+    from optparse import OptionParser
+    parser = OptionParser(usage="%prog [options] APP_MODULE", version=__version__)
+    parser.add_option("-q", "--quiet", action="store_true", help="Be quiet.")
+    parser.add_option("-b", "--bind", default='127.0.0.1:8080',
+        help="Bind server socket to ADDRESS.", metavar="ADDRESS")
+    parser.add_option("-s", "--server", default='wsgiref',
+        help="Use a specific server adapter.", metavar="NAME")
+    if not sys.argv[1:]: parser.parse_args(['-h'])
+    opt, args = parser.parse_args()
+    if not args: parser.error("No APP_MODULE specified.")
+    host, port = opt.bind.split(':')
+    run(args[0], host=host, port=int(port), server=opt.server, quiet=opt.quiet)
