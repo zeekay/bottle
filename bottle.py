@@ -597,8 +597,7 @@ class Bottle(object):
         location = self.router.build(routename, **kargs).lstrip('/')
         return urljoin(urljoin('/', scriptname), location)
 
-    def route(self, path=None, method='GET', callback=None, name=None,
-              apply=None, skip=None, **config):
+    def route(self, path=None, method=None, callback=None, **config):
         """ A decorator to bind a function to a request URL. Example::
 
                 @app.route('/hello/:name')
@@ -625,18 +624,19 @@ class Bottle(object):
             configuration and passed to plugins (see :meth:`Plugin.apply`).
         """
         if callable(path): path, callback = None, path
-        plugins = makelist(apply)
-        skiplist = makelist(skip)
+        if hasattr(local, '_group'):
+            path, method, callback, config =\
+            local._group.apply(path, method, callback, config)
+        config['plugins'] = makelist(config.pop('apply', None))
+        config['skiplist'] = makelist(config.pop('skip', None))
         def decorator(callback):
             # TODO: Documentation and tests
             if isinstance(callback, basestring): callback = load(callback)
             for rule in makelist(path) or yieldroutes(callback):
-                for verb in makelist(method):
-                    verb = verb.upper()
-                    route = Route(self, rule, verb, callback, name=name,
-                                  plugins=plugins, skiplist=skiplist, **config)
+                for verb in [m.upper() for m in makelist(method or 'GET')):
+                    route  = Route(self, rule, verb, callback, **config)
                     self.routes.append(route)
-                    self.router.add(rule, verb, route, name=name)
+                    self.router.add(rule, verb, route, name=config.get('name'))
                     if DEBUG: route.prepare()
             return callback
         return decorator(callback) if callback else decorator
@@ -1648,6 +1648,33 @@ class AppStack(list):
         self.append(value)
         return value
 
+class GroupContext(object):
+    ''' Used to set common defaults for a group of routes. '''
+    def __init__(self, path=None, method=None, callback=None, **defaults):
+        defaults.update(path=path, method=method, callback=callback)
+        if 'app' not in defaults: defaults['app'] = default_app()
+        self.defaults = defaults
+        self.original = None
+
+    def apply(self, path, method, callback, config):
+        yield path or self.defaults.get('path')
+        yield method or self.defaults.get('method')
+        yield callback or self.defaults.get('callback')
+        for key, value in self.defaults.iteritems():
+            if key not in config: config[key] = value
+        yield config
+
+    def __enter__(self):
+        self.original = getattr(local, '_group', {})
+        for key, value in self.backup.iteritems():
+            if key not in self.defauls:
+                self.defaults[key] = value
+        local._group = self.defaults
+        return self.defaults['app']
+
+    def __exit__(self):
+        local._group = self.original
+
 
 class WSGIFileWrapper(object):
 
@@ -1897,7 +1924,8 @@ def make_default_app_wrapper(name):
     ''' Return a callable that relays calls to the current default app. '''
     @functools.wraps(getattr(Bottle, name))
     def wrapper(*a, **ka):
-        return getattr(app(), name)(*a, **ka)
+        app = getattr(local, '_group', {}).get('app') or default_app()
+        return getattr(app, name)(*a, **ka)
     return wrapper
 
 
@@ -2749,7 +2777,7 @@ request = Request()
 #: A thread-save instance of :class:`Response` used to build the HTTP response.
 response = Response()
 
-#: A thread-save namepsace. Not used by Bottle.
+#: A thread-save namepsace.
 local = threading.local()
 
 # Initialize app stack (create first empty Bottle app)
