@@ -124,6 +124,7 @@ As you can see, URLs and routes have nothing to do with actual files on the web 
 
 
 .. _tutorial-dynamic-routes:
+.. _dynamic-routes:
 
 Dynamic Routes
 ------------------------------------------------------------------------------

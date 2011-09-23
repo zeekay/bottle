@@ -173,12 +173,6 @@ class TestRouteDecorator(ServerTestBase):
         self.assertBody('5', '/test')
         self.assertBody('6', '/test/6')
 
-    def test_no_params_at_all(self):
-        @bottle.route
-        def test(x=5): return str(x)
-        self.assertBody('5', '/test')
-        self.assertBody('6', '/test/6')
-
     def test_method(self):
         @bottle.route(method='gEt')
         def test(): return 'ok'

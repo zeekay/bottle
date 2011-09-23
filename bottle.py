@@ -597,46 +597,54 @@ class Bottle(object):
         location = self.router.build(routename, **kargs).lstrip('/')
         return urljoin(urljoin('/', scriptname), location)
 
-    def route(self, path=None, method=None, callback=None, **config):
-        """ A decorator to bind a function to a request URL. Example::
+    def route(self, path=None, method=None, callback=None, **conf):
+        """ Create a new route for a given request path. This method can be
+            used as a decorator, or called separately::
 
-                @app.route('/hello/:name')
+                @app.route('/hello/:name', 'GET')
                 def hello(name):
                     return 'Hello %s' % name
 
-            The ``:name`` part is a wildcard. See :class:`Router` for syntax
-            details.
+                # is equivalent to:
+                app.route('/hello/:name', 'GET', hello)
 
-            :param path: Request path or a list of paths to listen to. If no
-              path is specified, it is automatically generated from the
-              signature of the function.
-            :param method: HTTP method (`GET`, `POST`, `PUT`, ...) or a list of
-              methods to listen to. (default: `GET`)
-            :param callback: An optional shortcut to avoid the decorator
-              syntax. ``route(..., callback=func)`` equals ``route(...)(func)``
-            :param name: The name for this route. (default: None)
+            :param path: Request path or a list of paths. If no path is
+              specified, it is guessed from the callback call signature.
+              The ``:name`` part in the example above is a wildcard. See
+              :ref:`dynamic-routes` for details.
+            :param method: HTTP method or a list of methods. If no method is
+              specified, the route listens to `GET` and `HEAD` requests only.
+            :param callback: The endpoint for requests that match this route.
+              An endpoint is either a callable, or an import string compatible
+              with :func:`load`. If not defined, a decorator is returned to
+              bind a function directly upon definition.
+
+            The following keyword arguments are optional. Any additional keyword
+            arguments are stored as route-specific configuration and available
+            to plugins.
+
+            :param name: An optional name for this route.
             :param apply: A decorator or plugin or a list of plugins. These are
               applied to the route callback in addition to installed plugins.
             :param skip: A list of plugins, plugin classes or names. Matching
               plugins are not installed to this route. ``True`` skips all.
-
-            Any additional keyword arguments are stored as route-specific
-            configuration and passed to plugins (see :meth:`Plugin.apply`).
         """
-        if callable(path): path, callback = None, path
-        if hasattr(local, '_group'):
-            path, method, callback, config =\
-            local._group.apply(path, method, callback, config)
-        config['plugins'] = makelist(config.pop('apply', None))
-        config['skiplist'] = makelist(config.pop('skip', None))
+        conf.update(path=path, method=method, callback=callback)
+        for key, value in getattr(local, '_group', {}).iteritems():
+            if conf.get(key) is None and key not in ('app', '_last'):
+                conf[key] = value
+        paths    = makelist(conf.pop('path', None))
+        methods  = makelist(conf.pop('method', None) or 'GET')
+        callback = conf.pop('callback', None)
+        conf.setdefault('plugins', []).extend(makelist(conf.pop('apply', None)))
+        conf.setdefault('skiplist', []).extend(makelist(conf.pop('skip', None)))
         def decorator(callback):
-            # TODO: Documentation and tests
             if isinstance(callback, basestring): callback = load(callback)
-            for rule in makelist(path) or yieldroutes(callback):
-                for verb in [m.upper() for m in makelist(method or 'GET')):
-                    route  = Route(self, rule, verb, callback, **config)
+            for path in paths or yieldroutes(callback):
+                for method in (m.strip().upper() for m in methods):
+                    route = Route(self, path, method, callback, **conf)
                     self.routes.append(route)
-                    self.router.add(rule, verb, route, name=config.get('name'))
+                    self.router.add(path, method, route, name=conf.get('name'))
                     if DEBUG: route.prepare()
             return callback
         return decorator(callback) if callback else decorator
@@ -656,6 +664,12 @@ class Bottle(object):
     def delete(self, path=None, method='DELETE', **options):
         """ Equals :meth:`route` with a ``DELETE`` method parameter. """
         return self.route(path, method, **options)
+
+    def group(self, **defaults):
+        ''' Return a context manager that provides default values for a group of
+            routes. Nested with-statements are allowed, too.'''
+        defaults['app'] = self
+        return _GroupContext(**defaults)
 
     def error(self, code=500):
         """ Decorator: Register an output handler for a HTTP error code"""
@@ -1654,6 +1668,24 @@ class ConfigDict(dict):
         if key in self: del self[key]
 
 
+class _GroupContext(ConfigDict):
+    ''' Used to set common defaults for a group of routes. '''
+    def __init__(self, **defaults):
+        ConfigDict.__init__(self, **defaults)
+        self.app = self.get('app') or default_app()
+        self._last = None
+
+    def __enter__(self):
+        self._last = getattr(local, '_group', {})
+        for key, value in self._last.iteritems():
+            self.setdefault(key, value)
+        local._group = self
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        local._group = self._last
+
+
 class AppStack(list):
     """ A stack-like list. Calling it returns the head of the stack. """
 
@@ -1667,33 +1699,6 @@ class AppStack(list):
             value = Bottle()
         self.append(value)
         return value
-
-class GroupContext(object):
-    ''' Used to set common defaults for a group of routes. '''
-    def __init__(self, path=None, method=None, callback=None, **defaults):
-        defaults.update(path=path, method=method, callback=callback)
-        if 'app' not in defaults: defaults['app'] = default_app()
-        self.defaults = defaults
-        self.original = None
-
-    def apply(self, path, method, callback, config):
-        yield path or self.defaults.get('path')
-        yield method or self.defaults.get('method')
-        yield callback or self.defaults.get('callback')
-        for key, value in self.defaults.iteritems():
-            if key not in config: config[key] = value
-        yield config
-
-    def __enter__(self):
-        self.original = getattr(local, '_group', {})
-        for key, value in self.backup.iteritems():
-            if key not in self.defauls:
-                self.defaults[key] = value
-        local._group = self.defaults
-        return self.defaults['app']
-
-    def __exit__(self):
-        local._group = self.original
 
 
 class WSGIFileWrapper(object):
@@ -1950,7 +1955,7 @@ def make_default_app_wrapper(name):
 
 
 for name in '''route get post put delete error mount
-               hook install uninstall'''.split():
+               hook install uninstall group'''.split():
     globals()[name] = make_default_app_wrapper(name)
 url = make_default_app_wrapper('get_url')
 del name
