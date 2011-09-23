@@ -422,7 +422,7 @@ class Route(object):
         #: Additional keyword arguments passed to the :meth:`Bottle.route`
         #: decorator are stored in this dictionary. Used for route-specific
         #: plugin configuration and meta-data.
-        self.config = config
+        self.config = ConfigDict(config)
 
     def __call__(self, *a, **ka):
         depr("Some APIs changed to return Route() instances instead of"\
@@ -503,7 +503,7 @@ class Bottle(object):
         self.error_handler = {}
         #: If true, most exceptions are catched and returned as :exc:`HTTPError`
         self.catchall = catchall
-        self.config = config or {}
+        self.config = ConfigDict(config or {})
         #: An instance of :class:`HooksPlugin`. Empty by default.
         self.hooks = HooksPlugin()
         self.install(self.hooks)
@@ -1555,11 +1555,13 @@ class MultiDict(DictMixin):
         ''' Return a (possibly empty) list of values for a key. '''
         return self.dict.get(key) or []
 
+
 class FormsDict(MultiDict):
     ''' A :class:`MultiDict` with attribute-like access to form values.
         Missing attributes are always `None`. '''
     def __getattr__(self, name):
         return self.get(name, None)
+
 
 class HeaderDict(MultiDict):
     """ A case-insensitive version of :class:`MultiDict` that defaults to
@@ -1632,6 +1634,24 @@ class WSGIHeaderDict(DictMixin):
     def keys(self): return [x for x in self]
     def __len__(self): return len(self.keys())
     def __contains__(self, key): return self._ekey(key) in self.environ
+
+
+class ConfigDict(dict):
+    ''' Subclass of dict that adds attribute-like access to its values. As a
+        bonus, attribute access to missing keys result in a new ConfigDict. '''
+
+    def __getattr__(self, key):
+        return self[key] if key in self else self.setdefault(key, ConfigDict())
+
+    def __setattr__(self, key, value):
+        if hasattr(dict, key):
+            raise AttributeError('Read-only attribute.')
+        if key in self and self[key] and isinstance(self[key], ConfigDict):
+            raise AttributeError('Non-empty namespace attribute.')
+        self[key] = value
+
+    def __delattr__(self, key):
+        if key in self: del self[key]
 
 
 class AppStack(list):
@@ -2102,11 +2122,18 @@ class GeventServer(ServerAdapter):
 class GunicornServer(ServerAdapter):
     """ Untested. """
     def run(self, handler):
-        from gunicorn.arbiter import Arbiter
-        from gunicorn.config import Config
-        handler.cfg = Config({'bind': "%s:%d" % (self.host, self.port), 'workers': 4})
-        arbiter = Arbiter(handler)
-        arbiter.run()
+        from gunicorn.app.base import Application
+
+        config = {'bind': "%s:%d" % (self.host, int(self.port)), 'workers': 4}
+
+        class GunicornApplication(Application):
+            def init(self, parser, opts, args):
+                return config
+
+            def load(self):
+                return handler
+
+        GunicornApplication().run()
 
 
 class EventletServer(ServerAdapter):
