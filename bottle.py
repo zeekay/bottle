@@ -597,7 +597,8 @@ class Bottle(object):
         location = self.router.build(routename, **kargs).lstrip('/')
         return urljoin(urljoin('/', scriptname), location)
 
-    def route(self, path=None, method=None, callback=None, **conf):
+    def route(self, path=None, method=None, callback=None,
+                    apply=None, skip=None, **conf):
         """ Create a new route for a given request path. This method can be
             used as a decorator, or called separately::
 
@@ -618,30 +619,32 @@ class Bottle(object):
               An endpoint is either a callable, or an import string compatible
               with :func:`load`. If not defined, a decorator is returned to
               bind a function directly upon definition.
-
-            The following keyword arguments are optional. Any additional keyword
-            arguments are stored as route-specific configuration and available
-            to plugins.
-
-            :param name: An optional name for this route.
             :param apply: A decorator or plugin or a list of plugins. These are
               applied to the route callback in addition to installed plugins.
             :param skip: A list of plugins, plugin classes or names. Matching
-              plugins are not installed to this route. ``True`` skips all.
+              plugins are not applied to this route. ``True`` skips all plugins.
+
+            Any additional keyword arguments are stored as route-specific
+            configuration and available to plugins. For example:
+
+            :param name: An optional name used as a reverence for :func:'url'.
+            :param template: Renders the named template for this route.
         """
-        conf.update(path=path, method=method, callback=callback)
-        for key, value in getattr(local, '_group', {}).iteritems():
-            if conf.get(key) is None and key not in ('app', '_last'):
-                conf[key] = value
-        paths    = makelist(conf.pop('path', None))
-        methods  = makelist(conf.pop('method', None) or 'GET')
-        callback = conf.pop('callback', None)
-        conf.setdefault('plugins', []).extend(makelist(conf.pop('apply', None)))
-        conf.setdefault('skiplist', []).extend(makelist(conf.pop('skip', None)))
+
+        defaults = getattr(local, '_group', None) or {}
+        paths = makelist(path or defaults.get('path'))
+        methods = makelist(method or defaults.get('method') or 'GET')
+        conf['plugins'] = makelist(apply) + makelist(defaults.get('apply'))
+        conf['skiplist'] = makelist(skip) + makelist(defaults.get('skip'))
+        for key, value in defaults.iteritems():
+            if key not in ('app', 'path', 'method', 'skip', 'apply'):
+                conf.setdefault(key, value)
+
         def decorator(callback):
-            if isinstance(callback, basestring): callback = load(callback)
+            if isinstance(callback, basestring):
+                callback = load(callback)
             for path in paths or yieldroutes(callback):
-                for method in (m.strip().upper() for m in methods):
+                for method in (m.upper() for m in methods):
                     route = Route(self, path, method, callback, **conf)
                     self.routes.append(route)
                     self.router.add(path, method, route, name=conf.get('name'))
@@ -668,8 +671,7 @@ class Bottle(object):
     def group(self, **defaults):
         ''' Return a context manager that provides default values for a group of
             routes. Nested with-statements are allowed, too.'''
-        defaults['app'] = self
-        return _GroupContext(**defaults)
+        return _GroupContext(app=self, **defaults)
 
     def error(self, code=500):
         """ Decorator: Register an output handler for a HTTP error code"""
@@ -1668,22 +1670,20 @@ class ConfigDict(dict):
         if key in self: del self[key]
 
 
-class _GroupContext(ConfigDict):
+class _GroupContext(dict):
     ''' Used to set common defaults for a group of routes. '''
-    def __init__(self, **defaults):
-        ConfigDict.__init__(self, **defaults)
-        self.app = self.get('app') or default_app()
-        self._last = None
-
+    
     def __enter__(self):
-        self._last = getattr(local, '_group', {})
-        for key, value in self._last.iteritems():
+        self.parent = getattr(local, '_group', None)
+        for key, value in (self.parent or {}).iteritems():
             self.setdefault(key, value)
         local._group = self
-        return self
+        default_app.push(self['app'])
+        return default_app()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        local._group = self._last
+        default_app.pop()
+        local._group = self.parent
 
 
 class AppStack(list):
@@ -1949,8 +1949,7 @@ def make_default_app_wrapper(name):
     ''' Return a callable that relays calls to the current default app. '''
     @functools.wraps(getattr(Bottle, name))
     def wrapper(*a, **ka):
-        app = getattr(local, '_group', {}).get('app') or default_app()
-        return getattr(app, name)(*a, **ka)
+        return getattr(default_app(), name)(*a, **ka)
     return wrapper
 
 
