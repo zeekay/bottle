@@ -858,13 +858,10 @@ class BaseRequest(DictMixin):
 
     @DictProperty('environ', 'bottle.request.cookies', read_only=True)
     def cookies(self):
-        """ Cookies parsed into a dictionary. Signed cookies are NOT decoded.
-            Use :meth:`get_cookie` if you expect signed cookies. """
-        raw_dict = SimpleCookie(self.environ.get('HTTP_COOKIE',''))
-        cookies = {}
-        for cookie in raw_dict.itervalues():
-            cookies[cookie.key] = cookie.value
-        return cookies
+        """ Cookies parsed into a :class:`FormsDict`. Signed cookies are NOT
+            decoded. Use :meth:`get_cookie` if you expect signed cookies. """
+        cookies = SimpleCookie(self.environ.get('HTTP_COOKIE',''))
+        return FormsDict((c.key, c.value) for c in cookies.itervalues())
 
     def get_cookie(self, key, default=None, secret=None):
         """ Return the content of a cookie. To read a `Signed Cookie`, the
@@ -942,7 +939,7 @@ class BaseRequest(DictMixin):
             property holds the parsed content of the request body. Only requests
             smaller than :attr:`MEMFILE_MAX` are processed to avoid memory
             exhaustion. '''
-        if self.environ.get('CONTENT_TYPE') == 'application/json' \
+        if 'application/json' in self.environ.get('CONTENT_TYPE', '') \
         and 0 < self.content_length < self.MEMFILE_MAX:
             return json_loads(self.body.read(self.MEMFILE_MAX))
         return None
@@ -1040,8 +1037,8 @@ class BaseRequest(DictMixin):
     def script_name(self):
         ''' The initial portion of the URL's `path` that was removed by a higher
             level (server or routing middleware) before the application was
-            called. This property returns an empty string, or a path with
-            leading and tailing slashes. '''
+            called. This script path is returned with leading and tailing
+            slashes. '''
         script_name = self.environ.get('SCRIPT_NAME', '').strip('/')
         return '/' + script_name + '/' if script_name else '/'
 
@@ -1573,10 +1570,28 @@ class MultiDict(DictMixin):
 
 
 class FormsDict(MultiDict):
-    ''' A :class:`MultiDict` with attribute-like access to form values.
-        Missing attributes are always `None`. '''
-    def __getattr__(self, name):
-        return self.get(name, None)
+    ''' This :class:`MultiDict` subclass is used to store request form data.
+        Additionally to the normal dict-like item access methods (which return
+        unmodified data as native strings), this container also supports
+        attribute-like access to its values. Attribues are automatiically de- or
+        recoded to match :attr:`input_encoding` (default: 'utf8'). Missing
+        attributes default to ``None``. '''
+
+    #: Encoding used for attribute values.
+    input_encoding = 'utf8'
+    
+    def getunicode(self, name, default=None, encoding=None):
+        value, enc = self.get(name, default), encoding or self.input_encoding
+        try:
+            if isinstance(value, bytes): # Python 2 WSGI
+                return value.decode(enc)
+            elif isinstance(value, unicode): # Python 3 WSGI
+                return value.encode('latin1').decode(enc)
+            return value
+        except UnicodeError, e:
+            return default
+    
+    __getattr__ = getunicode
 
 
 class HeaderDict(MultiDict):
@@ -1653,11 +1668,22 @@ class WSGIHeaderDict(DictMixin):
 
 
 class ConfigDict(dict):
-    ''' Subclass of dict that adds attribute-like access to its values. As a
-        bonus, attribute access to missing keys result in a new ConfigDict. '''
+    ''' A dict-subclass with some extras: You can access keys like attributes.
+        Uppercase attributes create new ConfigDicts and act as name-spaces.
+        Other missing attributes return None. Calling a ConfigDict updates its
+        values and returns itself.
+
+        >>> cfg = ConfigDict()
+        >>> cfg.Namespace.value = 5
+        >>> cfg.OtherNamespace(a=1, b=2)
+        >>> cfg
+        {'Namespace': {'value': 5}, 'OtherNamespace': {'a': 1, 'b': 2}}
+    '''
 
     def __getattr__(self, key):
-        return self[key] if key in self else self.setdefault(key, ConfigDict())
+        if key in self: return self[key]
+        if key[0].isupper(): return self.setdefault(key, ConfigDict())
+        return
 
     def __setattr__(self, key, value):
         if hasattr(dict, key):
@@ -1668,6 +1694,10 @@ class ConfigDict(dict):
 
     def __delattr__(self, key):
         if key in self: del self[key]
+
+    def __call__(self, *a, **ka):
+        for key, value in dict(*a, **ka).iteritems(): setattr(self, key, value)
+        return self
 
 
 class _GroupContext(dict):
@@ -2675,10 +2705,9 @@ class SimpleTemplate(BaseTemplate):
         eval(self.co, env)
         if '_rebase' in env:
             subtpl, rargs = env['_rebase']
-            subtpl = self.__class__(name=subtpl, lookup=self.lookup)
             rargs['_base'] = _stdout[:] #copy stdout
             del _stdout[:] # clear stdout
-            return subtpl.execute(_stdout, rargs)
+            return self.subtemplate(subtpl,_stdout,rargs)
         return env
 
     def render(self, *args, **kwargs):
@@ -2802,10 +2831,10 @@ ERROR_PAGE_TEMPLATE = """
 %end
 """
 
-#: A thread-save instance of :class:`Request` representing the `current` request.
+#: A thread-safe instance of :class:`Request` representing the `current` request.
 request = Request()
 
-#: A thread-save instance of :class:`Response` used to build the HTTP response.
+#: A thread-safe instance of :class:`Response` used to build the HTTP response.
 response = Response()
 
 #: A thread-save namepsace.
