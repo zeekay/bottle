@@ -2600,29 +2600,23 @@ class SimpleTemplateParser(object):
         multiline = dedent = oneline = False
         encoding = self.encoding
 
-        def yield_tokens(line):
-            for i, part in enumerate(re.split(r'\{\{(.*?)\}\}', line)):
-                if i % 2:
-                    if part.startswith('!'): yield 'RAW', part[1:]
-                    else: yield 'CMD', part
-                else: yield 'TXT', part
-
         def flush(): # Flush the ptrbuffer
             if not ptrbuffer: return
-            cline = ''
-            for line in ptrbuffer:
-                for token, value in line:
-                    if token == 'TXT': cline += repr(value)
-                    elif token == 'RAW': cline += '_str(%s)' % value
-                    elif token == 'CMD': cline += '_escape(%s)' % value
-                    cline +=  ', '
-                cline = cline[:-2] + '\\\n'
-            cline = cline[:-2]
-            if cline[:-1].endswith('\\\\\\\\\\n'):
-                cline = cline[:-7] + cline[-1] # 'nobr\\\\\n' --> 'nobr'
-            cline = '_printlist([' + cline + '])'
-            del ptrbuffer[:] # Do this before calling code() again
-            code(cline)
+            text = ''.join(ptrbuffer)
+            del ptrbuffer[:]
+            if text.endswith('\\\\\n'): text = text[:-3] # Strip newlines
+            parts = []
+            for i, part in enumerate(re.split(r'\{\{(.*?)\}\}', text)):
+                if not part: continue
+                if i % 2: # Every odd entry is an {{inline}} statement
+                    part = part.strip()
+                    if not part: continue
+                    if part[0] == '!': part = '_str(%s)' % part[1:]
+                    else: part = '_escape(%s)' % part
+                else:
+                    part = '\\\n'.join(map(repr, part.splitlines(True)))
+                parts.append(part)
+            code('_printlist((%s,))' % ','.join(parts))
 
         def code(stmt):
             for line in stmt.splitlines():
@@ -2671,7 +2665,7 @@ class SimpleTemplateParser(object):
             else: # Line starting with text (not '%') or '%%' (escaped)
                 if line.strip().startswith('%%'):
                     line = line.replace('%%', '%', 1)
-                ptrbuffer.append(yield_tokens(line))
+                ptrbuffer.append(line)
         flush()
         return '\n'.join(codebuffer) + '\n'
 
