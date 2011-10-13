@@ -39,6 +39,7 @@ import time
 import warnings
 
 from Cookie import SimpleCookie
+from functools import partial
 from tempfile import TemporaryFile
 from traceback import format_exc
 from urlparse import urljoin, SplitResult as UrlSplitResult
@@ -2561,10 +2562,12 @@ class SimpleTALTemplate(BaseTemplate):
         return output.getvalue()
 
 
-class SimpleTemplate(BaseTemplate):
-    blocks = ('if', 'elif', 'else', 'try', 'except', 'finally', 'for', 'while',
-              'with', 'def', 'class')
-    dedent_blocks = ('elif', 'else', 'except', 'finally')
+class SimpleTemplateParser(object):
+    blocks = 'if elif else try except finally for while with def class'.split()
+    dedent_blocks = 'elif else except finally'.split()
+
+    def __init__(self, encoding='utf-8'):
+        self.encoding = encoding
 
     @lazy_attribute
     def re_pytokens(cls):
@@ -2579,15 +2582,6 @@ class SimpleTemplate(BaseTemplate):
              |\#.*                        # Comments
             )''', re.VERBOSE)
 
-    def prepare(self, escape_func=html_escape, noescape=False, **kwargs):
-        self.cache = {}
-        enc = self.encoding
-        self._str = lambda x: touni(x, enc)
-        self._escape = lambda x: escape_func(touni(x, enc))
-        if noescape:
-            self._str, self._escape = self._escape, self._str
-
-    @classmethod
     def split_comment(cls, code):
         """ Removes comments (#...) from python code. """
         if '#' not in code: return code
@@ -2595,18 +2589,16 @@ class SimpleTemplate(BaseTemplate):
         subf = lambda m: '' if m.group(0)[0]=='#' else m.group(0)
         return re.sub(cls.re_pytokens, subf, code)
 
-    @cached_property
-    def co(self):
-        return compile(self.code, self.filename or '<string>', 'exec')
+    def compile(self, source, filename='<string>'):
+        return compile(self.translate(source), filename, 'exec')
 
-    @cached_property
-    def code(self):
+    def translate(self, source):
         stack = [] # Current Code indentation
         lineno = 0 # Current line of code
         ptrbuffer = [] # Buffer for printable strings and token tuple instances
         codebuffer = [] # Buffer for generated python code
         multiline = dedent = oneline = False
-        template = self.source if self.source else open(self.filename).read()
+        encoding = self.encoding
 
         def yield_tokens(line):
             for i, part in enumerate(re.split(r'\{\{(.*?)\}\}', line)):
@@ -2636,13 +2628,12 @@ class SimpleTemplate(BaseTemplate):
             for line in stmt.splitlines():
                 codebuffer.append('  ' * len(stack) + line.strip())
 
-        for line in template.splitlines(True):
+        for line in source.splitlines(True):
             lineno += 1
-            line = line if isinstance(line, unicode)\
-                        else unicode(line, encoding=self.encoding)
+            line = touni(line, encoding)
             if lineno <= 2:
                 m = re.search(r"%.*coding[:=]\s*([-\w\.]+)", line)
-                if m: self.encoding = m.group(1)
+                if m: encoding = m.group(1)
                 if m: line = line.replace('coding','coding (removed)')
             if line.strip()[:2].count('%') == 1:
                 line = line.split('%',1)[1].lstrip() # Full line following the %
@@ -2664,17 +2655,17 @@ class SimpleTemplate(BaseTemplate):
                 elif cmd == 'include':
                     p = cline.split(None, 2)[1:]
                     if len(p) == 2:
-                        code("_=_include(%s, _stdout, %s)" % (repr(p[0]), p[1]))
+                        code("_=include(%s, %s)" % (repr(p[0]), p[1]))
                     elif p:
-                        code("_=_include(%s, _stdout)" % repr(p[0]))
+                        code("_=include(%s)" % repr(p[0]))
                     else: # Empty %include -> reverse of %rebase
                         code("_printlist(_base)")
                 elif cmd == 'rebase':
                     p = cline.split(None, 2)[1:]
                     if len(p) == 2:
-                        code("globals()['_rebase']=(%s, dict(%s))" % (repr(p[0]), p[1]))
+                        code("layout(%s, %s)" % (repr(p[0]), p[1]))
                     elif p:
-                        code("globals()['_rebase']=(%s, {})" % repr(p[0]))
+                        code("layout(%s)" % repr(p[0]))
                 else:
                     code(line)
             else: # Line starting with text (not '%') or '%%' (escaped)
@@ -2684,26 +2675,54 @@ class SimpleTemplate(BaseTemplate):
         flush()
         return '\n'.join(codebuffer) + '\n'
 
-    def subtemplate(self, _name, _stdout, *args, **kwargs):
-        for dictarg in args: kwargs.update(dictarg)
+
+class SimpleTemplate(BaseTemplate):
+
+    def prepare(self, escape_func=html_escape, noescape=False, **kwargs):
+        self.parser = SimpleTemplateParser(encoding=self.encoding)
+        self.cache = {}
+        enc = self.encoding
+        self._str = lambda x: touni(x, enc)
+        self._escape = lambda x: escape_func(touni(x, enc))
+        self.source = self.source or open(self.filename).read()
+        if noescape:
+            self._str, self._escape = self._escape, self._str
+
+    @cached_property
+    def code(self):
+        return self.parser.translate(self.source)
+
+    @cached_property
+    def co(self):
+        return self.parser.compile(self.source, self.filename or '<string>')
+
+    def _include(self, _env, _name, *args, **kwargs):
+        ''' Render a sub-template into the stdout buffer. '''
         if _name not in self.cache:
             self.cache[_name] = self.__class__(name=_name, lookup=self.lookup)
-        return self.cache[_name].execute(_stdout, kwargs)
+        return self.cache[_name].execute(_env['_stdout'], _env, *args, **kwargs)
+
+    def _layout(self, _env, _name, *args, **kwargs):
+        ''' Add rebase info to the env namespace. '''
+        _env['_layout'] = _name, args, kwargs
 
     def execute(self, _stdout, *args, **kwargs):
-        for dictarg in args: kwargs.update(dictarg)
         env = self.defaults.copy()
-        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
-               '_include': self.subtemplate, '_str': self._str,
-               '_escape': self._escape, 'get': env.get,
-               'setdefault': env.setdefault, 'defined': env.__contains__})
+        for dictarg in args: env.update(dictarg)
         env.update(kwargs)
+        env.update({'_stdout': _stdout, '_printlist': _stdout.extend,
+            '_str': self._str, '_escape': self._escape, 'get': env.get,
+            'setdefault': env.setdefault, 'defined': env.__contains__,
+            'layout': partial(self._layout, env), '_layout': None,
+            'include': partial(self._include, env)
+        })
         eval(self.co, env)
-        if '_rebase' in env:
-            subtpl, rargs = env['_rebase']
-            rargs['_base'] = _stdout[:] #copy stdout
+        if env.get('_layout'):
+            name, args, kwargs = env['_layout']
+            kwargs['_base'] = _stdout[:] #copy stdout
+            kwargs['_super'] = env
             del _stdout[:] # clear stdout
-            return self.subtemplate(subtpl,_stdout,rargs)
+            return self._include(env, name, *args, **kwargs)
         return env
 
     def render(self, *args, **kwargs):
@@ -2712,6 +2731,7 @@ class SimpleTemplate(BaseTemplate):
         stdout = []
         self.execute(stdout, kwargs)
         return ''.join(stdout)
+
 
 
 def template(*args, **kwargs):

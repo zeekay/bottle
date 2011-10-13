@@ -199,10 +199,8 @@ class TestSimpleTemplate(unittest.TestCase):
         ''' PEP263 strings in code-lines change the template encoding on the fly '''
         t = SimpleTemplate(u'%#coding: iso8859_15\nöäü?@€'.encode('utf8'))
         self.failIfEqual(u'öäü?@€', t.render())
-        self.assertEqual(t.encoding, 'iso8859_15')
         t = SimpleTemplate(u'%#coding: iso8859_15\nöäü?@€'.encode('iso8859_15'))
         self.assertEqual(u'öäü?@€', t.render())
-        self.assertEqual(t.encoding, 'iso8859_15')
         self.assertEqual(2, len(t.code.splitlines()))
 
     def test_ignore_pep263_in_textline(self):
