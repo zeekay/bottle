@@ -232,6 +232,21 @@ class TestSimpleTemplate(unittest.TestCase):
         t = SimpleTemplate(u'anything')
         self.assertEqual(u'anything', t.render())
 
+    def test_global_config(self):
+        content = SimpleTemplate('''% layout("layout")
+        % def x():
+            content {{next('x')()}}
+        % end
+        ''')
+        layout = SimpleTemplate('''start
+        % def x():
+            layout
+        % end
+        %_super['x']()
+        ''')
+        content.cache['layout'] = layout
+        self.assertEqual(u'anything', content.render())
+
 if __name__ == '__main__': #pragma: no cover
     unittest.main()
 

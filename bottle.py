@@ -2590,7 +2590,7 @@ class SimpleTemplateParser(object):
         return re.sub(cls.re_pytokens, subf, code)
 
     def compile(self, source, filename='<string>'):
-        return compile(self.translate(source), filename, 'exec')
+       return compile(self.translate(source), filename, 'exec')
 
     def translate(self, source):
         stack = [] # Current Code indentation
@@ -2653,7 +2653,7 @@ class SimpleTemplateParser(object):
                     elif p:
                         code("_=include(%s)" % repr(p[0]))
                     else: # Empty %include -> reverse of %rebase
-                        code("_printlist(_base)")
+                        code("_printlist(base)")
                 elif cmd == 'rebase':
                     p = cline.split(None, 2)[1:]
                     if len(p) == 2:
@@ -2700,6 +2700,16 @@ class SimpleTemplate(BaseTemplate):
         ''' Add rebase info to the env namespace. '''
         _env['_layout'] = _name, args, kwargs
 
+    def _next(self, env, name, default=Exception):
+        if '_super' in env:
+            if name in env['_super']:
+                return env['_super']
+            elif default is Exception:
+                raise NameError('Layout template does not define %r' % name)
+        elif default is Exception:
+            raise RuntimeError('No layout template found.')
+        return default
+
     def execute(self, _stdout, *args, **kwargs):
         env = self.defaults.copy()
         for dictarg in args: env.update(dictarg)
@@ -2708,12 +2718,14 @@ class SimpleTemplate(BaseTemplate):
             '_str': self._str, '_escape': self._escape, 'get': env.get,
             'setdefault': env.setdefault, 'defined': env.__contains__,
             'layout': partial(self._layout, env), '_layout': None,
-            'include': partial(self._include, env)
+            'include': partial(self._include, env),
+            'next': partial(self._next, env)
         })
+        if '_super' in env: kwargs['_super'] = env.pop('_super')
         eval(self.co, env)
         if env.get('_layout'):
             name, args, kwargs = env['_layout']
-            kwargs['_base'] = _stdout[:] #copy stdout
+            kwargs['base'] = _stdout[:] #copy stdout
             kwargs['_super'] = env
             del _stdout[:] # clear stdout
             return self._include(env, name, *args, **kwargs)
