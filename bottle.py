@@ -829,7 +829,7 @@ class BaseRequest(DictMixin):
     #: Maximum size of memory buffer for :attr:`body` in bytes.
     MEMFILE_MAX = 102400
 
-    def __init__(self, environ):
+    def __init__(self, environ={}):
         """ Wrap a WSGI environ dictionary. """
         #: The wrapped WSGI environ dictionary. This is the only real attribute.
         #: All other attributes actually are read-only properties.
@@ -1382,7 +1382,8 @@ class BaseResponse(object):
 
 class LocalRequest(BaseRequest, threading.local):
     ''' A thread-local subclass of :class:`BaseRequest`. '''
-    def __init__(self): pass
+    def __init__(self):
+        self.environ = {}
     bind = BaseRequest.__init__
 
 
